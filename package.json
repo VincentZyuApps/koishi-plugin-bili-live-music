@@ -1,22 +1,45 @@
 {
   "name": "koishi-plugin-bili-live-music",
-  "description": "B站直播间点歌，监听B站弹幕，对接obs，vlc，mpv等播放音频",
-  "version": "0.0.1",
+  "description": "B站直播间点歌，支持弹幕、Bot与WebUI队列管理，通过OBS浏览器源播放音频",
+  "version": "0.2.0-alpha.1+20260716",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
     "lib",
-    "dist"
+    "dist",
+    "assets"
   ],
   "license": "MIT",
-  "scripts": {},
   "keywords": [
     "chatbot",
     "koishi",
     "plugin"
   ],
-  "devDependencies": {},
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "koishi": {
+    "browser": true,
+    "service": {
+      "required": [
+        "node"
+      ],
+      "optional": [
+        "console"
+      ]
+    }
+  },
+  "dependencies": {
+    "@fastify/websocket": "^11.2.0",
+    "axios": "^1.18.1",
+    "fastify": "^5.5.0"
+  },
   "peerDependencies": {
-    "koishi": "^4.18.7"
+    "@koishijs/plugin-console": "^5.30.0",
+    "koishi": "^4.18.7",
+    "koishi-plugin-w-node": "^2.0.0"
+  },
+  "devDependencies": {
+    "@koishijs/client": "^5.30.0"
   }
 }

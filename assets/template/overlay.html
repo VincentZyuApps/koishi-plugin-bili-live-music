@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN" data-overlay-version="2">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>bili-live-music</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; font-family: system-ui, sans-serif; }
+    .panel { position: fixed; left: 24px; bottom: 24px; min-width: 360px; max-width: 720px; padding: 16px 18px; color: #fff; background: rgba(0, 0, 0, .55); border-radius: 8px; box-sizing: border-box; }
+    .title { font-size: 22px; font-weight: 700; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .meta { margin-top: 6px; font-size: 15px; opacity: .86; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .queue { margin-top: 10px; font-size: 13px; opacity: .75; }
+    .empty { opacity: .65; }
+    .device-control { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; opacity: .45; transition: opacity .2s ease; }
+    .panel:hover .device-control, .device-control:focus-within { opacity: 1; }
+    .role-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #9ca3af; }
+    .device-control.player .role-dot { background: #36d399; box-shadow: 0 0 0 3px rgba(54, 211, 153, .18); }
+    .role-label { flex: 1; }
+    .claim-button { min-height: 28px; padding: 4px 9px; border: 1px solid rgba(255, 255, 255, .34); border-radius: 5px; color: #fff; background: rgba(255, 255, 255, .1); cursor: pointer; }
+    .claim-button:hover { background: rgba(255, 255, 255, .2); }
+    .claim-button[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <div id="title" class="title empty">等待点歌</div>
+    <div id="meta" class="meta">OBS 浏览器源已就绪</div>
+    <div id="queue" class="queue"></div>
+    <div id="device" class="device-control">
+      <span class="role-dot" aria-hidden="true"></span>
+      <span id="role-label" class="role-label">正在连接播放服务</span>
+      <button id="claim" class="claim-button" type="button" hidden>设为主播放器</button>
+    </div>
+  </div>
+  <audio id="audio" crossorigin="anonymous"></audio>
+  <script>
+    const wsPath = __WS_PATH__
+    const audio = document.getElementById('audio')
+    const title = document.getElementById('title')
+    const meta = document.getElementById('meta')
+    const queue = document.getElementById('queue')
+    const device = document.getElementById('device')
+    const roleLabel = document.getElementById('role-label')
+    const claimButton = document.getElementById('claim')
+    let socket
+    let role = 'offline'
+
+    function connect() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const params = new URLSearchParams(location.search)
+      const wsUrl = new URL(protocol + '//' + location.host + wsPath)
+      if (params.get('token')) wsUrl.searchParams.set('token', params.get('token'))
+      wsUrl.searchParams.set('mode', params.get('mode') === 'display' ? 'display' : 'player')
+      socket = new WebSocket(wsUrl)
+      socket.addEventListener('open', () => send({ type: 'ready' }))
+      socket.addEventListener('message', event => {
+        const message = JSON.parse(event.data)
+        if (message.type === 'state') render(message.state)
+        if (message.type === 'play') play(message.item)
+        if (message.type === 'stop') stopAudio()
+        if (message.type === 'role') setRole(message.role)
+      })
+      socket.addEventListener('close', () => {
+        stopAudio()
+        setRole('offline')
+        setTimeout(connect, 2000)
+      })
+    }
+
+    function send(message) {
+      if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message))
+    }
+
+    function play(item) {
+      if (role !== 'player') return
+      render({ current: item, queue: [], playing: true })
+      audio.src = item.song.url
+      audio.play().catch(error => send({ type: 'error', message: String(error && error.message || error) }))
+    }
+
+    function stopAudio() {
+      audio.pause()
+      audio.removeAttribute('src')
+      audio.load()
+    }
+
+    function setRole(nextRole) {
+      role = nextRole
+      device.classList.toggle('player', role === 'player')
+      roleLabel.textContent = role === 'player'
+        ? '当前设备：主播放器'
+        : role === 'display'
+          ? '当前设备：展示端'
+          : '播放服务连接已断开'
+      claimButton.hidden = role !== 'display'
+      if (role !== 'player') stopAudio()
+    }
+
+    function render(state) {
+      const current = state && state.current
+      if (!current) {
+        title.textContent = '等待点歌'
+        title.classList.add('empty')
+        meta.textContent = '当前队列 ' + ((state && state.queue && state.queue.length) || 0) + ' 首'
+      } else {
+        title.textContent = current.song.title
+        title.classList.remove('empty')
+        meta.textContent = current.song.artist + ' · ' + current.song.source + ' · 点歌: ' + current.requester.name
+      }
+      const rest = (state && state.queue) || []
+      queue.textContent = rest.length ? '下一首：' + rest.slice(0, 3).map(item => item.song.title).join(' / ') : ''
+    }
+
+    claimButton.addEventListener('click', () => send({ type: 'claim' }))
+    audio.addEventListener('ended', () => {
+      if (role === 'player') send({ type: 'ended' })
+    })
+    audio.addEventListener('error', () => {
+      if (role === 'player') send({ type: 'error', message: 'audio error' })
+    })
+    connect()
+  </script>
+</body>
+</html>
