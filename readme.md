@@ -2,7 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/koishi-plugin-bili-live-music?style=flat-square)](https://www.npmjs.com/package/koishi-plugin-bili-live-music)
 
-B站直播间点歌，支持弹幕、Bot 与 WebUI 队列管理，通过 OBS 浏览器源播放音频。
+B站直播间点歌，支持弹幕、Bot 与 WebUI 队列管理，可通过 OBS 浏览器源或插件专属 VLC 进程播放音频。
 
 ## 功能
 
@@ -11,9 +11,9 @@ B站直播间点歌，支持弹幕、Bot 与 WebUI 队列管理，通过 OBS 浏
 - 维护点歌队列，提供用户冷却、单用户上限、队列上限和歌曲时长限制。
 - 使用独立 Fastify 服务向 OBS 浏览器源提供播放页面和 WebSocket。
 - 使用 Axios 统一发起音乐与 B 站身份 API 请求，请求超时为 15 秒且不自动重试。
-- 区分主播放器与展示端，确保同一时间只有一个页面播放音频和推进队列。
-
-> 当前版本只实现了 OBS 浏览器源播放，暂未实现 VLC 和 mpv 控制。
+- 提供 Browser 与 VLC 两种播放后端，默认保持 Browser，不改变升级后的现有行为。
+- Browser 模式区分主播放器与展示端，确保同一时间只有一个页面播放音频和推进队列。
+- VLC 模式由插件启动并管理专属隐藏进程，Overlay 继续显示歌曲、进度和队列。
 
 ## 落月 API
 
@@ -54,10 +54,36 @@ WebUI 默认返回最多 20 条候选结果。搜索阶段只获取元数据，�
 1. 在 Koishi 中启用 `w-node` 和本插件；队列管理 WebUI 还需要启用 `console`。
 2. 填写 `roomId`；普通公开直播间可先留空 `cookie` 和 `uid`。
 3. 按需选择 `enabledSources`；使用酷狗时需将 `apiBaseUrl` 切换到支持酷狗的 API。
-4. 保持默认 OBS 独立服务配置，或按需修改监听地址、端口、展示地址和访问令牌。
-5. 在 OBS 中添加浏览器源，地址填写插件日志或 `bili-live-music.overlay` 指令返回的主播放器地址。
-6. 默认地址为 `http://127.0.0.1:60716/bili-live-music/overlay?token=test12345&mode=player&layout=standard`。
-7. 在直播间发送 `点歌 晴天`。
+4. 在 `playbackBackend` 中选择 Browser 或 VLC；VLC 模式需要填写可用的 `vlcExecutablePath`。
+5. 保持默认 OBS 独立服务配置，或按需修改监听地址、端口、展示地址和访问令牌。
+6. 在 OBS 中添加浏览器源，地址填写插件日志或 `bili-live-music.overlay` 指令返回的地址。
+7. 默认地址为 `http://127.0.0.1:60716/bili-live-music/overlay?token=test12345&mode=player&layout=standard`。
+8. 在直播间发送 `点歌 晴天`。
+
+### 播放后端
+
+`playbackBackend` 默认为 `browser`。Browser 模式由唯一的 `mode=player` 页面使用 `<audio>` 播放，适合让声音直接进入 OBS 混音器。VLC 模式在 Koishi 所在设备启动专属 VLC 进程，所有 Overlay 页面仅负责展示，但仍可通过交互按钮控制上一首、暂停和下一首。
+
+| 通用播放配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `playbackVolume` | `100` | Browser 与 VLC 共用的初始音量，可配置 0–100%。 |
+| `playbackLoadTimeout` | `25` | 单曲开始播放的等待上限，单位秒；超时后标记失败并继续下一首。 |
+
+| VLC 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `vlcExecutablePath` | `vlc` | VLC 可执行文件；未加入 PATH 时填写完整的 `vlc.exe` 路径。 |
+| `vlcRcPort` | `60717` | RC 控制端口，只绑定 `127.0.0.1`。 |
+| `vlcStartupTimeout` | `10000` | VLC 启动及 RC 连接超时，单位毫秒。 |
+| `vlcAudioDevice` | 空 | VLC 音频设备内部 ID；留空跟随系统默认设备。 |
+| `vlcShowWindow` | `false` | 默认隐藏插件专属 VLC 窗口，排错时可显示。 |
+| `vlcAutoRestart` | `true` | VLC 异常退出后自动重启。 |
+| `vlcRestartLimit` | `1` | 单次异常后的自动重启次数。 |
+
+正式支持 Windows x64 VLC `3.0.18–3.0.23`，VLC 3 的其他版本属于尽力支持，VLC 4 nightly 属于实验支持，VLC 2.x 不支持。本机 VLC 3.0.21 已通过真实 RC 播放测试。
+
+WebUI 的播放后端区域提供统一的 0–100% 实时音量滑块；调整只影响当前插件运行，不会修改 `koishi.yml`，插件重启后重新使用 `playbackVolume`。VLC 模式还提供“检测 VLC”“查询音频设备”和“重启 VLC”。查询结果会显示设备内部 ID，将目标 ID 写入 `vlcAudioDevice` 并重载插件即可固定输出设备。
+
+单首歌曲地址过期或 VLC 无法解码时，插件会跳过该曲并继续下一首。VLC 进程或 RC 整体故障时会自动重启一次；重启成功后当前歌曲从头播放，重启失败则保留当前歌曲和等待队列并停止调度，等待管理员修复后从 WebUI 重启。
 
 ### OBS 独立服务
 
@@ -68,7 +94,9 @@ WebUI 默认返回最多 20 条候选结果。搜索阶段只获取元数据，�
 | `obsPublicHost` | `127.0.0.1` | 仅用于生成展示地址；跨机器连接时填写局域网 IP、公网 IP 或域名。 |
 | `obsAccessToken` | `test12345` | 页面与 WebSocket 访问令牌；默认值仅用于测试，正式使用时必须修改。 |
 
-主播放器会实际播放音频，并向插件报告播放进度、结束或失败。展示端只显示当前歌曲和队列，不播放音频，也不能推进队列。
+Browser 模式下，主播放器会实际播放音频，并向插件报告播放进度、结束或失败；展示端只显示当前歌曲和队列。VLC 模式下两种地址都不会在网页中播放音频，页面状态会显示“VLC 播放后端”。
+
+歌曲已进入当前播放位但 Browser 或 VLC 尚未确认开始播放时，Console WebUI 与全部 Overlay 布局会在封面上显示加载动画。加载超过 `playbackLoadTimeout` 后，该歌曲会显示为“播放失败”，随后自动尝试队列中的下一首。
 
 ```text
 # 主播放器，适合 OBS 浏览器源
@@ -92,15 +120,18 @@ http://127.0.0.1:60716/bili-live-music/overlay?token=test12345&mode=display&layo
 
 主播放器悬停时会显示上一首、播放/暂停和下一首按钮。在 OBS 中可通过“与浏览器源交互”操作。最近播放历史默认保留 25 首，可通过 `historyLimit` 修改；历史只保存在内存中，插件重启后清空。
 
+最后一首歌曲结束且队列为空后，Overlay 与 Console WebUI 会继续保留该歌曲的封面、歌名、歌手和进度，并显示半透明结束遮罩。自然结束显示“已播放结束”，手动切歌显示“已跳过”，单曲加载或解码失败显示红色“播放失败”；自然结束进度固定为 100%，其余原因保留实际停止位置。最后歌曲会保留到下一首开始或插件重启，期间可以使用“上一首”从头重播。
+
 插件会自动将 `LXGWWenKaiMono-Regular.ttf` 下载到 `ctx.baseDir/data/assets/bili-live-music/fonts`，依次尝试 Gitee 和 GitHub，并校验文件大小与 SHA-256。Overlay 与 Console WebUI 共用 Fastify 字体路由；下载失败、HTTPS 页面阻止 HTTP 字体或字体服务不可达时会回退到系统字体。
 
 在 OBS 的“来源”面板点击 `+`，选择“浏览器”，并按以下方式设置：
 
-- URL 填写上面的 `mode=player` 主播放器地址，不要填写 `mode=display` 地址。
-- 宽度和高度建议与画布一致，例如 `1920 × 1080`；页面背景透明，歌曲信息显示在左下角。
-- 建议启用“通过 OBS 控制音频”，让音乐进入 OBS 混音器；需要本机也听见时，在“高级音频属性”中将监听设为“监听并输出”。
+- Browser 模式的 URL 填写 `mode=player` 主播放器地址；VLC 模式可使用任意展示地址。
+- 宽度和高度直接使用布局表中的推荐尺寸，页面组件不会随浏览器源画布拉伸。
+- Browser 模式建议启用“通过 OBS 控制音频”，让网页音乐进入 OBS 混音器；需要本机也听见时，在“高级音频属性”中将监听设为“监听并输出”。
+- VLC 模式的声音从 Koishi 所在设备输出，OBS 中需要启用“桌面音频”或添加“应用程序音频采集”并选择插件启动的 VLC。
 - 建议关闭“场景变为活动状态时刷新浏览器”和“场景不可见时关闭源”，否则切换场景会断开播放器并让当前歌曲从头播放。
-- 同一时间只保留一个 `mode=player` 页面。其他场景或浏览器监看请使用 `mode=display`，避免主播放器被后打开的页面接管。
+- Browser 模式同一时间只保留一个 `mode=player` 页面。其他场景或浏览器监看请使用 `mode=display`，避免主播放器被后打开的页面接管。
 
 Fastify 仅提供 HTTP。需要公网 HTTPS 时，请使用 Nginx、Caddy 等反向代理管理 TLS。
 
@@ -128,8 +159,11 @@ Koishi 控制台会新增「直播点歌」页面，支持：
 - 搜索候选歌曲并以 `WebUI 管理员` 身份加入队列。
 - 置顶、上移、下移或删除等待歌曲。
 - 跳过当前歌曲或清空等待队列。
+- 查看 Browser/VLC 运行状态，并检测 VLC、查询音频设备或重启专属 VLC 进程。
 
 WebUI 手动加歌会绕过用户冷却和单用户上限，但仍遵守单曲时长和总队列上限。队列仅保存在内存中，重启插件后会清空。
+
+`cooldown` 的单位是秒，默认值为 `25`，设置为 `0` 可关闭 CD。B 站弹幕和 Bot 点歌会受到限制，WebUI 管理员手动加歌会绕过限制。B 站匿名监听返回 `uid=0` 时，插件改用弹幕用户名区分观众，避免所有匿名观众共享同一个冷却计时器。
 
 ## 命令
 

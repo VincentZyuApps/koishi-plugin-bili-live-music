@@ -88,6 +88,11 @@ python .\webui\test_obs_overlay.py `
 - `--pause`：测试完成后等待回车再关闭浏览器。
 - `--timeout-ms`：调整页面加载与元素等待超时。
 - `--layout`：选择 `mini`、`standard` 或 `sidebar`，脚本会在 `1000 × 900` 的大画布中断言组件的固定尺寸，可以发现意外拉伸。
+- `--backend`：选择当前配置的 `browser` 或 `vlc`；VLC 模式会断言页面显示“VLC 播放后端”且网页音频保持暂停。
+- `--mock-finished`：注入 `ended`、`skipped` 或 `error` 结束态并验证遮罩，不会修改真实播放队列。
+- `--mock-loading`：注入歌曲加载态并验证封面加载动画，不会修改真实播放队列。
 - `--profile-directory`：指定现有 Edge 用户数据目录中的档案名称，仅 Koishi Console 脚本支持。
 - `--search-keyword`：执行一次真实音乐搜索，并要求至少显示一条结果。
+- `--require-loaded-covers`：与搜索一起使用，要求所有可见搜索结果封面的 `naturalWidth` 大于 0。
 - `--add-result-index`：将指定的搜索结果加入队列，序号从 `1` 开始，必须与 `--search-keyword` 一起使用。
+- `--test-volume`：临时调整 0–100% 播放音量，刷新验证运行态仍保留后恢复原值。

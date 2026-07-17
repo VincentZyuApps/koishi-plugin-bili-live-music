@@ -5,8 +5,8 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify'
 import websocket from '@fastify/websocket'
 import type { Config } from '../config'
 import { resolveOverlayTemplatePath } from '../assets'
-import { BrowserPlayerAdapter, type BrowserSocket } from '../player/browser'
-import { QueueManager } from '../queue/manager'
+import { OverlayHub } from '../overlay/hub'
+import type { OverlayClientMessage, OverlaySocket } from '../overlay/protocol'
 import { FONT_ROUTE } from '../font'
 
 export type OverlayMode = 'player' | 'display'
@@ -21,8 +21,7 @@ export interface ObsServer {
 export async function startObsServer(
   ctx: Context,
   config: Config,
-  player: BrowserPlayerAdapter,
-  queue: QueueManager,
+  hub: OverlayHub,
 ): Promise<ObsServer> {
   validateConfig(config)
   const logger = ctx.logger('bili-live-music')
@@ -55,40 +54,22 @@ export async function startObsServer(
     }
 
     const mode = parseMode(getQuery(request, 'mode'))
-    const browserSocket = socket as BrowserSocket
-    player.addSocket(browserSocket, mode)
-    logger.info(`🎧 OBS 页面已连接: mode=${mode}，主播放器=${player.isPrimary(browserSocket) ? '是' : '否'}`)
+    const overlaySocket = socket as OverlaySocket
+    const role = hub.addSocket(overlaySocket, mode)
+    logger.info(`🎧 OBS 页面已连接: mode=${mode}，role=${role}`)
     socket.addEventListener('close', () => {
       logger.info(`🔌 OBS 页面已断开: mode=${mode}`)
     })
 
     socket.addEventListener('message', (event) => {
-      let message: any
+      let message: OverlayClientMessage
       try {
-        message = JSON.parse(event.data.toString())
+        message = JSON.parse(event.data.toString()) as OverlayClientMessage
       } catch {
         return
       }
-      if (message.type === 'claim') {
-        const claimed = player.claim(browserSocket)
-        logger.info(`🎧 OBS 页面请求接管主播放器: ${claimed ? '成功' : '失败'}`)
-        return
-      }
-      if (message.type === 'ready') {
-        player.broadcast(queue.getState())
-        return
-      }
-      if (!player.isPrimary(browserSocket)) return
-      if (message.type === 'ended') void queue.handleEnded()
-      if (message.type === 'previous') void queue.previous()
-      if (message.type === 'next') void queue.skip()
-      if (message.type === 'pause') void queue.pause()
-      if (message.type === 'resume') void queue.resume()
-      if (message.type === 'progress') queue.handleProgress(String(message.itemId || ''), Number(message.position))
-      if (message.type === 'error') {
-        logger.warn(`浏览器源播放失败: ${message.message || 'unknown error'}`)
-        queue.handlePlayerError()
-      }
+      const accepted = hub.receive(overlaySocket, message)
+      if (message.type === 'claim') logger.info(`🎧 OBS 页面请求接管主播放器: ${accepted ? '成功' : '失败'}`)
     })
   })
 

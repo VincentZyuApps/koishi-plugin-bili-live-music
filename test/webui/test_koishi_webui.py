@@ -19,7 +19,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-url", required=True, help="Full bili-live-music Console page URL.")
     parser.add_argument("--screenshot", required=True, help="Output PNG path.")
     parser.add_argument("--search-keyword", help="Optionally search for a song and require at least one result.")
+    parser.add_argument("--require-loaded-covers", action="store_true", help="Require every visible search-result cover to finish loading.")
     parser.add_argument("--add-result-index", type=int, help="Add the 1-based search result index to the queue.")
+    parser.add_argument("--test-volume", type=int, help="Temporarily set 0-100 playback volume, reload to verify persistence, then restore it.")
     parser.add_argument("--interactive-login", action="store_true", help="Wait for manual sign-in before testing target-url.")
     parser.add_argument("--headless", action="store_true", help="Run without a visible browser window.")
     parser.add_argument("--pause", action="store_true", help="Keep the page open until Enter is pressed.")
@@ -40,6 +42,8 @@ def main() -> int:
         raise ValueError("--add-result-index requires --search-keyword")
     if args.add_result_index is not None and args.add_result_index < 1:
         raise ValueError("--add-result-index must be at least 1")
+    if args.test_volume is not None and not 0 <= args.test_volume <= 100:
+        raise ValueError("--test-volume must be between 0 and 100")
     browser_path = Path(args.browser_path).expanduser().resolve(strict=True)
     user_data_dir = Path(args.user_data_dir).expanduser().resolve()
     screenshot_path = Path(args.screenshot).expanduser().resolve()
@@ -98,6 +102,28 @@ def main() -> int:
                     f"Current URL: {page.url}\nFailure screenshot: {failure_path}\n{details}"
                 ) from error
 
+            volume = page.locator("#playback-volume")
+            volume.wait_for(state="visible", timeout=args.timeout_ms)
+            if volume.get_attribute("min") != "0" or volume.get_attribute("max") != "100":
+                raise RuntimeError("playback volume slider must use the 0-100 range")
+            initial_volume = int(volume.input_value())
+            if args.test_volume is not None:
+                volume.fill(str(args.test_volume))
+                page.wait_for_timeout(500)
+                page.reload(wait_until="domcontentloaded", timeout=args.timeout_ms)
+                page.locator("main.music-page").wait_for(state="visible", timeout=args.timeout_ms)
+                page.wait_for_function(
+                    """() => {
+                        const provider = document.querySelector('.provider')
+                        return provider && provider.textContent.trim() !== '正在连接音乐服务'
+                    }""",
+                    timeout=args.timeout_ms,
+                )
+                if int(volume.input_value()) != args.test_volume:
+                    raise RuntimeError("playback volume did not persist in runtime state after reload")
+                volume.fill(str(initial_volume))
+                page.wait_for_timeout(500)
+
             try:
                 page.wait_for_function(
                     """() => {
@@ -137,6 +163,20 @@ def main() -> int:
                 result_count = page.locator(".search-results tbody tr").count()
                 if result_count < 1:
                     raise RuntimeError("song search returned no visible result rows")
+                if args.require_loaded_covers:
+                    try:
+                        page.wait_for_function(
+                            """() => {
+                                const images = [...document.querySelectorAll('.search-results tbody img.cover')]
+                                return images.length > 0 && images.every(image => image.complete && image.naturalWidth > 0)
+                            }""",
+                            timeout=args.timeout_ms,
+                        )
+                    except PlaywrightTimeoutError as error:
+                        image_states = page.locator(".search-results tbody img.cover").evaluate_all(
+                            "images => images.map(image => ({ src: image.src, complete: image.complete, naturalWidth: image.naturalWidth }))",
+                        )
+                        raise RuntimeError(f"search-result covers did not finish loading: {image_states}") from error
                 if args.add_result_index is not None:
                     if args.add_result_index > result_count:
                         raise RuntimeError(
@@ -157,8 +197,13 @@ def main() -> int:
             print(f"PASS: Koishi Console UI loaded at {page.url}")
             print(f"PASS: Console DataService provider={provider}")
             print(f"PASS: layout bounds={bounds}")
+            print(f"PASS: playback volume={volume.input_value()}%")
+            if args.test_volume is not None:
+                print(f"PASS: runtime volume RPC accepted {args.test_volume}% and restored {initial_volume}%")
             if args.search_keyword:
                 print(f"PASS: search keyword={args.search_keyword!r} results={result_count}")
+            if args.require_loaded_covers:
+                print("PASS: all visible search-result covers loaded")
             if args.add_result_index is not None:
                 print(f"PASS: added search result index={args.add_result_index}")
             print(f"Screenshot: {screenshot_path}")

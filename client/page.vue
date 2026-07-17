@@ -8,36 +8,105 @@
         <h1>直播点歌</h1>
         <p class="provider">{{ state.provider || '正在连接音乐服务' }}</p>
       </div>
-      <div class="status" :class="state.playing ? 'playing' : state.paused ? 'paused' : !state.playerReady ? 'disconnected' : 'idle'">
+      <div class="status" :class="state.phase === 'loading' ? 'loading' : state.playing ? 'playing' : state.paused ? 'paused' : !state.playerReady ? 'disconnected' : 'idle'">
         <span class="status-dot"></span>
-        {{ state.playing ? '播放中' : state.paused ? '已暂停' : !state.playerReady ? '播放器未连接' : '空闲' }}
+        {{ state.phase === 'loading' ? '正在加载' : state.playing ? '播放中' : state.paused ? '已暂停' : !state.playerReady ? '播放器未就绪' : '空闲' }}
       </div>
     </header>
 
     <p v-if="notice" class="notice" :class="noticeType">{{ notice }}</p>
 
+    <section class="section backend-section">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">播放后端</span>
+          <h2>{{ state.playback.kind === 'vlc' ? 'VLC 本地播放器' : 'OBS 浏览器播放器' }}</h2>
+          <p class="backend-detail">{{ state.playback.detail }}</p>
+        </div>
+        <div v-if="state.playback.kind === 'vlc'" class="backend-actions">
+          <button class="command-button" :disabled="busy.has('vlc-detect')" @click="detectVlc">⌕ 检测 VLC</button>
+          <button class="command-button" :disabled="busy.has('vlc-devices') || !state.playerReady" @click="queryVlcDevices">♫ 查询音频设备</button>
+          <button class="command-button danger" :disabled="busy.has('vlc-restart')" @click="restartVlc">↻ 重启 VLC</button>
+        </div>
+      </div>
+      <p v-if="state.backendError" class="backend-error">{{ state.backendError }}</p>
+      <div class="volume-control">
+        <label for="playback-volume">🔊 播放音量</label>
+        <input
+          id="playback-volume"
+          :value="volumeDraft"
+          type="range"
+          min="0"
+          max="100"
+          step="1"
+          aria-label="播放音量"
+          @input="onVolumeInput"
+          @change="onVolumeChange"
+        />
+        <output for="playback-volume">{{ volumeDraft }}%</output>
+      </div>
+      <dl v-if="state.playback.kind === 'vlc'" class="backend-meta">
+        <div><dt>运行状态</dt><dd>{{ playbackStatusLabel(state.playback.status) }}</dd></div>
+        <div><dt>VLC 版本</dt><dd>{{ state.playback.version || '尚未检测' }}</dd></div>
+        <div><dt>可执行文件</dt><dd>{{ state.playback.executable || 'vlc' }}</dd></div>
+        <div><dt>音频设备</dt><dd>{{ state.playback.audioDevice || '系统默认' }}</dd></div>
+      </dl>
+      <div v-if="vlcDevices.length" class="device-list">
+        <strong>VLC 音频设备</strong>
+        <div v-for="device in vlcDevices" :key="device.id" class="device-row">
+          <span>{{ device.name }}</span>
+          <code>{{ device.id }}</code>
+          <button class="icon-button" title="复制设备 ID" aria-label="复制设备 ID" @click="copyDeviceId(device.id)">⧉</button>
+        </div>
+      </div>
+    </section>
+
     <section class="section current-section">
       <div class="section-heading">
         <div>
           <span class="eyebrow">当前播放</span>
-          <h2>{{ state.current ? state.current.song.title : '暂无播放' }}</h2>
+          <h2>{{ displayedItem ? displayedItem.song.title : '暂无播放' }}</h2>
         </div>
-        <div v-if="state.current || state.queue.length" class="playback-controls">
+        <div v-if="state.current || state.queue.length || state.lastFinished" class="playback-controls">
           <button class="icon-button" title="上一首" aria-label="上一首" :disabled="!state.history.length || busy.has('previous')" @click="previousTrack">⏮</button>
-          <button class="icon-button primary-control" :title="playbackButtonLabel" :aria-label="playbackButtonLabel" :disabled="busy.has('toggle')" @click="togglePlayback">{{ !state.current || state.paused ? '▶' : '⏸' }}</button>
+          <button class="icon-button primary-control" :title="playbackButtonLabel" :aria-label="playbackButtonLabel" :disabled="busy.has('toggle') || state.phase === 'loading' || (!state.current && !state.queue.length)" @click="togglePlayback">{{ state.phase === 'loading' ? '…' : !state.current || state.paused ? '▶' : '⏸' }}</button>
           <button class="icon-button danger" title="下一首" aria-label="下一首" :disabled="!state.current || busy.has('skip')" @click="skipCurrent">⏭</button>
         </div>
       </div>
 
-      <div v-if="state.current" class="current-track">
-        <img v-if="state.current.song.cover" :src="state.current.song.cover" alt="" class="cover large" />
-        <div v-else class="cover large cover-fallback" aria-hidden="true">♫</div>
-        <div class="track-details">
-          <strong>{{ state.current.song.artist }}</strong>
-          <span>{{ sourceLabel(state.current.song.source) }}<template v-if="state.current.song.album"> · {{ state.current.song.album }}</template></span>
-          <span>{{ formatDuration(state.current.song.duration) }} · {{ state.current.song.quality || '自动音质' }}</span>
-          <span>{{ formatPosition(state.position) }} / {{ formatPosition(state.current.song.duration) }}</span>
-          <span>点歌人：{{ state.current.requester.name }} · {{ originLabel(state.current.requester.origin) }}</span>
+      <div v-if="displayedItem" class="current-track-frame">
+        <div class="current-track">
+          <div class="current-cover-wrap">
+            <img v-if="displayedItem.song.cover" :src="displayedItem.song.cover" alt="" class="cover large" />
+            <div v-else class="cover large cover-fallback" aria-hidden="true">♫</div>
+            <div v-if="state.current && state.phase === 'loading'" class="loading-mask">
+              <span class="loading-spinner" aria-hidden="true"></span>
+              <span>正在加载</span>
+            </div>
+          </div>
+          <div class="track-details">
+            <strong>{{ displayedItem.song.artist }}</strong>
+            <span>{{ sourceLabel(displayedItem.song.source) }}<template v-if="displayedItem.song.album"> · {{ displayedItem.song.album }}</template></span>
+            <span>{{ formatDuration(displayedItem.song.duration) }} · {{ displayedItem.song.quality || '自动音质' }}</span>
+            <div class="track-progress-row">
+              <div
+                class="track-progress"
+                role="progressbar"
+                aria-label="歌曲播放进度"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                :aria-valuenow="progressPercent(displayedPosition, displayedItem.song.duration)"
+              >
+                <span :style="{ width: `${progressPercent(displayedPosition, displayedItem.song.duration)}%` }"></span>
+              </div>
+              <span class="track-time">{{ formatPosition(displayedPosition) }} / {{ formatPosition(displayedItem.song.duration) }}</span>
+            </div>
+            <span>点歌人：{{ displayedItem.requester.name }} · {{ originLabel(displayedItem.requester.origin) }}</span>
+          </div>
+        </div>
+        <div v-if="!state.current && state.lastFinished" class="finished-mask" :class="state.lastFinished.reason">
+          <strong>{{ finishTitle(state.lastFinished.reason) }}</strong>
+          <span>{{ state.queue.length ? `等待队列 ${state.queue.length} 首` : '队列为空' }}</span>
         </div>
       </div>
       <div v-else class="empty-state">队列就绪</div>
@@ -174,6 +243,7 @@ import { send, store } from '@koishijs/client'
 type MusicSource = 'netease' | 'tencent' | 'kugou'
 type RequestOrigin = 'bilibili' | 'bot-group' | 'bot-private' | 'webui'
 type MoveAction = 'top' | 'up' | 'down'
+type PlaybackPhase = 'idle' | 'loading' | 'playing' | 'paused' | 'finished' | 'error'
 
 interface Song {
   id?: string
@@ -199,22 +269,63 @@ interface QueueItem {
 
 interface QueueState {
   current: QueueItem | null
+  lastFinished: LastFinishedTrack | null
   queue: QueueItem[]
   history: QueueItem[]
+  phase: PlaybackPhase
   playing: boolean
   paused: boolean
   position: number
   provider: string
   fontUrl: string
   playerReady: boolean
+  backendError: string | null
+  playback: PlaybackRuntime
 }
+
+interface LastFinishedTrack {
+  item: QueueItem
+  reason: 'ended' | 'skipped' | 'error'
+  position: number
+  finishedAt: number
+}
+
+interface PlaybackRuntime {
+  kind: 'browser' | 'vlc'
+  status: 'starting' | 'ready' | 'restarting' | 'error' | 'stopped'
+  ready: boolean
+  detail: string
+  error: string | null
+  volume: number
+  executable?: string
+  version?: string
+  audioDevice?: string
+}
+
+interface AudioDevice { id: string; name: string; active: boolean }
 
 interface SearchResponse { searchId: string; songs: Song[] }
 
 const rpc = send as (type: string, ...args: any[]) => Promise<any>
-const fallbackState: QueueState = { current: null, queue: [], history: [], playing: false, paused: false, position: 0, provider: '', fontUrl: '', playerReady: false }
+const fallbackState: QueueState = {
+  current: null,
+  lastFinished: null,
+  queue: [],
+  history: [],
+  phase: 'idle',
+  playing: false,
+  paused: false,
+  position: 0,
+  provider: '',
+  fontUrl: '',
+  playerReady: false,
+  backendError: null,
+  playback: { kind: 'browser', status: 'stopped', ready: false, detail: '正在连接播放器', error: null, volume: 100 },
+}
 const state = computed(() => (store['bili-live-music'] as QueueState | undefined) || fallbackState)
-const playbackButtonLabel = computed(() => !state.value.current ? '开始播放' : state.value.paused ? '继续播放' : '暂停')
+const displayedItem = computed(() => state.value.current || state.value.lastFinished?.item || null)
+const displayedPosition = computed(() => state.value.current ? state.value.position : state.value.lastFinished?.position || 0)
+const playbackButtonLabel = computed(() => state.value.phase === 'loading' ? '正在加载' : !state.value.current ? '开始播放' : state.value.paused ? '继续播放' : '暂停')
 const keyword = ref('')
 const songs = ref<Song[]>([])
 const searchId = ref('')
@@ -222,9 +333,16 @@ const searching = ref(false)
 const searched = ref(false)
 const notice = ref('')
 const noticeType = ref<'success' | 'error'>('success')
+const vlcDevices = ref<AudioDevice[]>([])
+const volumeDraft = ref(100)
 const busy = reactive(new Set<string>())
 let noticeTimer: number | undefined
 let loadedFontUrl = ''
+let volumeTimer: number | undefined
+
+watch(() => state.value.playback.volume, (volume) => {
+  if (Number.isFinite(volume)) volumeDraft.value = Math.max(0, Math.min(100, Math.round(volume)))
+}, { immediate: true })
 
 watch(() => state.value.fontUrl, async (url) => {
   if (!url || url === loadedFontUrl || typeof FontFace === 'undefined') return
@@ -257,6 +375,14 @@ function originLabel(origin: RequestOrigin) {
   return originLabels[origin] || origin
 }
 
+function playbackStatusLabel(status: PlaybackRuntime['status']) {
+  return ({ starting: '启动中', ready: '已就绪', restarting: '重启中', error: '故障', stopped: '已停止' })[status]
+}
+
+function finishTitle(reason: LastFinishedTrack['reason']) {
+  return ({ ended: '已播放结束', skipped: '已跳过', error: '播放失败' })[reason]
+}
+
 function formatDuration(duration: number) {
   if (!duration) return '--:--'
   const total = Math.round(duration / 1000)
@@ -268,6 +394,11 @@ function formatPosition(duration: number) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
+function progressPercent(position: number, duration: number) {
+  if (!Number.isFinite(position) || !Number.isFinite(duration) || duration <= 0) return 0
+  return Math.round(Math.max(0, Math.min(100, position / duration * 100)) * 10) / 10
+}
+
 function formatTime(timestamp: number) {
   return new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
@@ -277,6 +408,25 @@ function showNotice(message: string, type: 'success' | 'error' = 'success') {
   noticeType.value = type
   window.clearTimeout(noticeTimer)
   noticeTimer = window.setTimeout(() => { notice.value = '' }, 4000)
+}
+
+function onVolumeInput(event: Event) {
+  volumeDraft.value = Number((event.target as HTMLInputElement).value)
+  window.clearTimeout(volumeTimer)
+  volumeTimer = window.setTimeout(() => void applyVolume(), 120)
+}
+
+function onVolumeChange() {
+  window.clearTimeout(volumeTimer)
+  void applyVolume()
+}
+
+async function applyVolume() {
+  try {
+    volumeDraft.value = await rpc('bili-live-music/set-volume', { volume: volumeDraft.value })
+  } catch (error) {
+    showNotice(`音量调整失败：${messageOf(error)}`, 'error')
+  }
 }
 
 async function searchSongs() {
@@ -363,7 +513,7 @@ async function togglePlayback() {
     const changed = await rpc(action)
     if (!changed) {
       const message = !state.value.playerReady
-        ? 'OBS 主播放器未连接，请先打开 mode=player 页面'
+        ? state.value.playback.detail
         : '当前播放状态无法执行此操作'
       showNotice(message, 'error')
     }
@@ -384,6 +534,52 @@ async function clearQueue() {
     showNotice(`清空失败：${messageOf(error)}`, 'error')
   } finally {
     busy.delete('clear')
+  }
+}
+
+async function detectVlc() {
+  busy.add('vlc-detect')
+  try {
+    const result = await rpc('bili-live-music/vlc-detect')
+    showNotice(result.message, result.ok ? 'success' : 'error')
+  } catch (error) {
+    showNotice(`检测失败：${messageOf(error)}`, 'error')
+  } finally {
+    busy.delete('vlc-detect')
+  }
+}
+
+async function queryVlcDevices() {
+  busy.add('vlc-devices')
+  try {
+    vlcDevices.value = await rpc('bili-live-music/vlc-devices')
+    showNotice(`查询到 ${vlcDevices.value.length} 个音频设备`)
+  } catch (error) {
+    showNotice(`设备查询失败：${messageOf(error)}`, 'error')
+  } finally {
+    busy.delete('vlc-devices')
+  }
+}
+
+async function restartVlc() {
+  if (!window.confirm('重启插件专属 VLC 进程？当前歌曲会从头播放。')) return
+  busy.add('vlc-restart')
+  try {
+    const ready = await rpc('bili-live-music/vlc-restart')
+    showNotice(ready ? 'VLC 已重启' : 'VLC 重启失败，请检查路径、端口和日志', ready ? 'success' : 'error')
+  } catch (error) {
+    showNotice(`VLC 重启失败：${messageOf(error)}`, 'error')
+  } finally {
+    busy.delete('vlc-restart')
+  }
+}
+
+async function copyDeviceId(id: string) {
+  try {
+    await navigator.clipboard.writeText(id)
+    showNotice('设备 ID 已复制')
+  } catch {
+    showNotice('浏览器不允许访问剪贴板', 'error')
   }
 }
 
@@ -449,8 +645,10 @@ h2 { margin-top: 4px; font-size: 20px; line-height: 1.3; }
 
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #8a929d; }
 .status.playing .status-dot { background: var(--success); box-shadow: 0 0 0 4px rgba(22, 131, 91, .12); }
+.status.loading .status-dot { background: var(--accent); animation: status-pulse 1s ease-in-out infinite; }
 .status.paused .status-dot { background: #d18a16; box-shadow: 0 0 0 4px rgba(209, 138, 22, .12); }
 .status.disconnected .status-dot { background: var(--danger); box-shadow: 0 0 0 4px rgba(193, 62, 62, .12); }
+@keyframes status-pulse { 50% { opacity: .35; transform: scale(.75); } }
 
 .notice {
   position: fixed;
@@ -473,9 +671,41 @@ h2 { margin-top: 4px; font-size: 20px; line-height: 1.3; }
 .eyebrow { color: var(--accent-strong); font-size: 12px; font-weight: 700; }
 .count { color: var(--muted); font-size: 13px; white-space: nowrap; }
 
-.current-track { display: flex; align-items: center; gap: 18px; margin-top: 20px; }
-.track-details { display: grid; gap: 5px; min-width: 0; }
+.backend-detail { margin-top: 6px; color: var(--muted); font-size: 13px; }
+.backend-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.backend-error { margin-top: 14px; padding: 10px 12px; border-left: 3px solid var(--danger); color: var(--danger); background: rgba(196, 59, 70, .08); }
+.volume-control { display: grid; width: min(100%, 520px); grid-template-columns: auto minmax(140px, 1fr) 48px; align-items: center; gap: 12px; margin-top: 18px; }
+.volume-control label { font-size: 13px; font-weight: 700; }
+.volume-control input { width: 100%; accent-color: var(--accent-strong); cursor: pointer; }
+.volume-control output { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; text-align: right; }
+.backend-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 18px 0 0; }
+.backend-meta div { min-width: 0; }
+.backend-meta dt { color: var(--muted); font-size: 12px; }
+.backend-meta dd { margin: 4px 0 0; overflow-wrap: anywhere; font-size: 13px; }
+.device-list { display: grid; gap: 8px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.device-row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(160px, 2fr) 32px; align-items: center; gap: 10px; }
+.device-row code { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+
+.current-track-frame { position: relative; max-width: 830px; margin-top: 20px; overflow: hidden; border-radius: 6px; }
+.current-track { display: flex; align-items: center; gap: 18px; min-height: 92px; }
+.current-cover-wrap { position: relative; width: 92px; height: 92px; flex: 0 0 auto; overflow: hidden; border-radius: 4px; }
+.loading-mask { position: absolute; z-index: 1; inset: 0; display: grid; place-content: center; justify-items: center; gap: 7px; color: #fff; background: rgba(24, 27, 33, .58); font-size: 11px; font-weight: 700; animation: loading-reveal .2s ease .3s both; }
+.loading-spinner { width: 24px; height: 24px; box-sizing: border-box; border: 3px solid rgba(255, 255, 255, .3); border-top-color: #ff8eb4; border-radius: 50%; animation: loading-spin .8s linear infinite; }
+@keyframes loading-spin { to { transform: rotate(360deg); } }
+@keyframes loading-reveal { from { opacity: 0; } to { opacity: 1; } }
+.track-details { display: grid; flex: 1; gap: 5px; min-width: 0; max-width: 720px; }
 .track-details strong { font-size: 17px; }
+.track-progress-row { display: grid; grid-template-columns: minmax(120px, 1fr) auto; align-items: center; gap: 10px; margin: 2px 0; }
+.track-progress { width: 100%; height: 6px; overflow: hidden; border-radius: 3px; background: var(--line); }
+.track-progress > span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--accent-strong); transition: width .25s linear; }
+.track-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.finished-mask { position: absolute; z-index: 2; inset: 0; display: grid; place-content: center; gap: 4px; color: #fff; background: rgba(24, 27, 33, .62); text-align: center; }
+.finished-mask strong { font-size: 18px; }
+.finished-mask span { color: rgba(255, 255, 255, .82); font-size: 13px; }
+.finished-mask.ended strong { color: #f7b2ca; }
+.finished-mask.skipped strong { color: #f5ce7a; }
+.finished-mask.error { background: rgba(91, 20, 28, .68); }
+.finished-mask.error strong { color: #ffd7dc; }
 
 .cover { width: 42px; height: 42px; flex: 0 0 auto; object-fit: cover; border-radius: 4px; background: #eceff2; }
 .cover.large { width: 92px; height: 92px; }
@@ -564,8 +794,15 @@ tbody tr:last-child td { border-bottom: 0; }
   h1 { font-size: 21px; }
   h2 { font-size: 18px; }
   .section-heading { align-items: flex-start; }
+  .backend-section .section-heading { display: grid; }
+  .backend-actions { justify-content: flex-start; }
+  .backend-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .device-row { grid-template-columns: minmax(0, 1fr) 32px; }
+  .device-row code { grid-column: 1 / -1; grid-row: 2; }
   .current-track { align-items: flex-start; }
   .cover.large { width: 72px; height: 72px; }
+  .current-cover-wrap { width: 72px; height: 72px; }
+  .volume-control { grid-template-columns: auto minmax(100px, 1fr) 44px; }
   .search-bar { grid-template-columns: 1fr; }
   .command-button.primary { width: 100%; }
   .table-wrap { margin-left: -14px; margin-right: -14px; border-left: 0; border-right: 0; border-radius: 0; }

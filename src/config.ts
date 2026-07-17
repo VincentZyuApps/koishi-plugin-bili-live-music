@@ -38,9 +38,23 @@ export interface Config {
   // ===== 📋 队列限制 =====
   maxQueueSize: number // 📚 最大队列长度
   perUserLimit: number // 👤 单用户最多排队歌曲数
-  cooldown: number // ⏳ 单用户点歌冷却时间
+  cooldown: number // ⏳ 单用户点歌冷却时间，单位秒
   maxDuration: number // ⏱️ 单首歌曲最长时长
   historyLimit: number // 🕘 最近播放历史数量
+
+  // ===== ▶️ 播放后端 =====
+  playbackBackend: 'browser' | 'vlc'
+  playbackVolume: number
+  playbackLoadTimeout: number
+  /** @deprecated 仅用于从旧配置迁移到 playbackVolume。 */
+  vlcVolume?: number
+  vlcExecutablePath: string
+  vlcRcPort: number
+  vlcStartupTimeout: number
+  vlcAudioDevice: string
+  vlcShowWindow: boolean
+  vlcAutoRestart: boolean
+  vlcRestartLimit: number
 
   // ===== 🖥️ OBS 独立播放服务 =====
   obsServerHost: string // 🧭 Fastify 监听地址
@@ -83,9 +97,20 @@ export function normalizeConfig(input: Partial<Config>): Config {
 
   config.maxQueueSize ??= 30
   config.perUserLimit ??= 3
-  config.cooldown ??= 30_000
+  config.cooldown ??= 25
   config.maxDuration ??= 10 * 60 * 1000
   config.historyLimit ??= 25
+
+  if (config.playbackBackend !== 'vlc') config.playbackBackend = 'browser'
+  config.playbackVolume ??= Math.min(100, Math.max(0, config.vlcVolume ?? 100))
+  config.playbackLoadTimeout ??= 25
+  config.vlcExecutablePath ??= 'vlc'
+  config.vlcRcPort ??= 60717
+  config.vlcStartupTimeout ??= 10_000
+  config.vlcAudioDevice ??= ''
+  config.vlcShowWindow ??= false
+  config.vlcAutoRestart ??= true
+  config.vlcRestartLimit ??= 1
 
   config.obsServerHost ??= '0.0.0.0'
   config.obsServerPort ??= 60716
@@ -128,7 +153,7 @@ export const Config = Schema.intersect([
     musicBackend: Schema.union([
       Schema.const('netease').description('☁️ 网易云直链 API'),
       Schema.const('luoyue').description('🌙 落月 API'),
-    ]).role('radio').default('luoyue').description('🌐 统一音乐后端，同时作用于 B 站弹幕、Bot 指令和 WebUI'),
+    ]).role('radio').default('netease').description('🌐 统一音乐后端，同时作用于 B 站弹幕、Bot 指令和 WebUI'),
     searchLimit: Schema.natural().min(1).max(10).default(3).description('🔍 弹幕与 Bot 自动点歌时的单平台候选数量'),
     webuiSearchLimit: Schema.natural().min(1).max(50).default(20).description('🖥️ WebUI 搜索结果的目标总数'),
   }).description('🎵 点歌入口与音乐后端'),
@@ -171,10 +196,28 @@ export const Config = Schema.intersect([
   Schema.object({
     maxQueueSize: Schema.natural().default(30).description('📚 最大队列长度'),
     perUserLimit: Schema.natural().default(3).description('👤 单用户最多排队歌曲数'),
-    cooldown: Schema.natural().role('time').default(30_000).description('⏳ 单用户点歌冷却时间'),
+    cooldown: Schema.natural().default(25).description('⏳ 单用户点歌冷却时间（秒）<br><i>默认 25 秒；设置为 0 可关闭 CD；B 站匿名监听无法取得真实 UID 时按弹幕用户名分别计时</i>'),
     maxDuration: Schema.natural().role('time').default(10 * 60 * 1000).description('⏱️ 单首歌曲最长时长'),
     historyLimit: Schema.natural().min(1).max(100).default(25).description('🕘 最近播放历史数量<br><i>用于“上一首”控制，历史仅保存在内存中，插件重启后清空</i>'),
   }).description('📋 队列限制'),
+
+  Schema.object({
+    playbackBackend: Schema.union([
+      Schema.const('browser').description('🌐 OBS 浏览器主播放器'),
+      Schema.const('vlc').description('🔊 插件专属 VLC 进程'),
+    ]).role('radio').default('browser').description('▶️ 音频播放后端<br><i>VLC 模式下 Overlay 只负责展示，音频由 Koishi 所在设备输出</i>'),
+    playbackVolume: Schema.natural().min(0).max(100).default(100).description('🔉 初始播放音量（0–100%）<br><i>WebUI 可在运行时调整，但不会写回 Koishi 配置</i>'),
+    playbackLoadTimeout: Schema.natural().min(1).max(300).default(25).description('⏳ 单曲加载超时时间（秒）<br><i>超时后将该歌曲标记为播放失败，并继续播放下一首</i>'),
+  }).description('▶️ 播放后端'),
+  Schema.object({
+    vlcExecutablePath: Schema.string().default('vlc').description('📂 VLC 可执行文件路径<br><i>已加入 PATH 时可填写 <code>vlc</code>，Windows 也可填写完整的 <code>vlc.exe</code> 路径</i>'),
+    vlcRcPort: Schema.natural().min(1).max(65535).default(60717).description('🔌 VLC RC 本地控制端口<br><i>固定监听 127.0.0.1，不对局域网开放</i>'),
+    vlcStartupTimeout: Schema.natural().role('time').min(1_000).default(10_000).description('⏱️ VLC 启动与 RC 连接超时时间'),
+    vlcAudioDevice: Schema.string().default('').description('🎚️ VLC 音频设备内部 ID<br><i>留空使用 Windows 系统默认设备，可在 WebUI 查询设备</i>'),
+    vlcShowWindow: Schema.boolean().default(false).description('🪟 是否显示插件启动的 VLC 窗口<br><i>默认隐藏，排查 VLC 启动问题时可临时开启</i>'),
+    vlcAutoRestart: Schema.boolean().default(true).description('🔁 VLC 进程异常退出时是否自动重启'),
+    vlcRestartLimit: Schema.natural().min(0).max(10).default(1).description('🛟 VLC 异常退出后的自动重启次数<br><i>重启失败会保留当前歌曲与队列，等待管理员处理</i>'),
+  }).description('🔊 VLC 播放设置'),
 
   // ===== 🖥️ OBS 独立播放服务 =====
   Schema.object({

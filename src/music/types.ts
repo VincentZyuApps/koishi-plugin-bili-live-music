@@ -71,13 +71,26 @@ export interface QueueItem {
   createdAt: number
 }
 
+export type PlaybackFinishReason = 'ended' | 'skipped' | 'error'
+export type PlaybackPhase = 'idle' | 'loading' | 'playing' | 'paused' | 'finished' | 'error'
+
+export interface LastFinishedTrack {
+  item: QueueItem
+  reason: PlaybackFinishReason
+  position: number
+  finishedAt: number
+}
+
 export interface PlayerState {
   current: QueueItem | null
+  lastFinished: LastFinishedTrack | null
   queue: QueueItem[]
   history: QueueItem[]
+  phase: PlaybackPhase
   playing: boolean
   paused: boolean
   position: number
+  backendError: string | null
 }
 
 export interface QueueSubmission {

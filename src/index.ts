@@ -7,7 +7,9 @@ import { BilibiliDanmuClient } from './danmu/client'
 import { parseSongRequest } from './danmu/parser'
 import { createMusicProvider } from './music/provider'
 import { createHttpClient } from './http'
-import { BrowserPlayerAdapter } from './player/browser'
+import { OverlayHub } from './overlay/hub'
+import { createPlaybackManager } from './player/factory'
+import type { PlaybackManager } from './player/manager'
 import { QueueManager } from './queue/manager'
 import { SongRequestService } from './request/service'
 import { registerConsoleApi } from './console/api'
@@ -24,8 +26,11 @@ export async function apply(ctx: Context, inputConfig: Config) {
   const config = normalizeConfig(inputConfig)
   const logger = ctx.logger('bili-live-music')
   let disposed = false
-  let player: BrowserPlayerAdapter | undefined
-  let releaseAvailability: (() => void) | undefined
+  let player: PlaybackManager | undefined
+  let hub: OverlayHub | undefined
+  let queue: QueueManager | undefined
+  let releaseState: (() => void) | undefined
+  let releaseControls: (() => void) | undefined
   let releaseObsServerLease: (() => void) | undefined
   let obsServer: Awaited<ReturnType<typeof startObsServer>> | undefined
   let obsServerStarting = false
@@ -37,10 +42,14 @@ export async function apply(ctx: Context, inputConfig: Config) {
   ctx.on('dispose', async () => {
     disposed = true
     danmu?.stop()
-    releaseAvailability?.()
-    releaseAvailability = undefined
-    player?.dispose()
+    releaseState?.()
+    releaseControls?.()
+    queue?.dispose()
+    queue = undefined
+    await player?.dispose()
     player = undefined
+    hub?.dispose()
+    hub = undefined
     const server = obsServer
     obsServer = undefined
     if (!server && obsServerStarting) return
@@ -62,12 +71,19 @@ export async function apply(ctx: Context, inputConfig: Config) {
   await ensureFont(ctx, http, config.fontPath)
   if (disposed) return
   const provider = createMusicProvider(ctx, config, http)
-  const activePlayer = new BrowserPlayerAdapter()
+  const activeHub = new OverlayHub(config.playbackBackend, config.playbackVolume)
+  hub = activeHub
+  const activePlayer = createPlaybackManager(ctx, config, activeHub)
   player = activePlayer
-  const queue = new QueueManager(config, activePlayer)
-  const requests = new SongRequestService(provider, queue)
-  releaseAvailability = activePlayer.onAvailabilityChange((available) => {
-    void queue.handlePlayerAvailability(available)
+  const activeQueue = new QueueManager(config, activePlayer)
+  queue = activeQueue
+  const requests = new SongRequestService(provider, activeQueue)
+  releaseState = activeQueue.onStateChange(state => activeHub.publish(state))
+  releaseControls = activeHub.onControl(control => {
+    if (control === 'previous') void activeQueue.previous()
+    if (control === 'next') void activeQueue.skip()
+    if (control === 'pause') void activeQueue.pause()
+    if (control === 'resume') void activeQueue.resume()
   })
   const releaseLease = await acquireObsServerLease(config.obsServerHost, config.obsServerPort)
   if (disposed) {
@@ -78,7 +94,7 @@ export async function apply(ctx: Context, inputConfig: Config) {
   let startedObsServer: Awaited<ReturnType<typeof startObsServer>>
   obsServerStarting = true
   try {
-    startedObsServer = await startObsServer(ctx, config, activePlayer, queue)
+    startedObsServer = await startObsServer(ctx, config, activeHub)
   } catch (error) {
     obsServerStarting = false
     releaseObsServerLease()
@@ -97,7 +113,10 @@ export async function apply(ctx: Context, inputConfig: Config) {
   }
   obsServer = startedObsServer
 
-  registerConsoleApi(ctx, queue, requests, config, startedObsServer.fontUrl(), {
+  await activePlayer.start()
+  if (disposed) return
+
+  registerConsoleApi(ctx, activeQueue, activePlayer, requests, config, startedObsServer.fontUrl(), {
     dev: path.resolve(__dirname, '../client/index.ts'),
     prod: path.resolve(__dirname, '../dist'),
   })
@@ -145,18 +164,19 @@ export async function apply(ctx: Context, inputConfig: Config) {
       })
   }
   ctx.command('bili-live-music.status', '查看点歌队列状态').action(() => {
-    const state = queue.getState()
+    const state = activeQueue.getState()
     const current = state.current
       ? `正在播放：${state.current.song.title} - ${state.current.song.artist}`
       : '当前没有播放中的歌曲'
-    return `${current}\n队列剩余：${state.queue.length} 首\nOBS 主播放器：${activePlayer.isReady() ? '已连接' : '未连接'}`
+    const backend = activePlayer.kind === 'vlc' ? 'VLC' : 'OBS 浏览器'
+    return `${current}\n队列剩余：${state.queue.length} 首\n${backend} 播放器：${activePlayer.isReady() ? '已就绪' : '未就绪'}`
   })
   ctx.command('bili-live-music.skip', '跳过当前歌曲', { authority: 3 }).action(async () => {
-    await queue.skip()
+    await activeQueue.skip()
     return '已跳过当前歌曲'
   })
   ctx.command('bili-live-music.clear', '清空点歌队列', { authority: 3 }).action(() => {
-    queue.clear()
+    activeQueue.clear()
     return '已清空点歌队列'
   })
   ctx.command('bili-live-music.overlay', '查看 OBS 浏览器源路径', { authority: 3 }).action(() => {

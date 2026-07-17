@@ -5,6 +5,7 @@ import type { Config } from '../config'
 import type { PlayerState, QueueSubmission, Song } from '../music/types'
 import type { QueueMoveAction } from '../queue/manager'
 import { QueueManager } from '../queue/manager'
+import type { PlaybackBackend, PlaybackRuntimeState, AudioDeviceInfo, PlaybackDiagnostic } from '../player/types'
 import { SongRequestService } from '../request/service'
 import { logInfo } from '../utils/logger'
 
@@ -14,6 +15,7 @@ export interface QueueConsoleState extends PlayerState {
   provider: string
   fontUrl: string
   playerReady: boolean
+  playback: PlaybackRuntimeState
 }
 
 export interface SearchResponse {
@@ -40,6 +42,10 @@ declare module '@koishijs/plugin-console' {
     'bili-live-music/resume'(): Promise<boolean>
     'bili-live-music/skip'(): Promise<boolean>
     'bili-live-music/clear'(): Promise<boolean>
+    'bili-live-music/set-volume'(params: { volume: number }): Promise<number>
+    'bili-live-music/vlc-detect'(): Promise<PlaybackDiagnostic>
+    'bili-live-music/vlc-devices'(): Promise<AudioDeviceInfo[]>
+    'bili-live-music/vlc-restart'(): Promise<boolean>
   }
 }
 
@@ -50,6 +56,7 @@ class QueueStateService extends DataService<QueueConsoleState> {
     ctx: Context,
     private deps: {
       queue: QueueManager
+      player: PlaybackBackend
       requests: SongRequestService
       config: Config
       fontUrl: string
@@ -57,10 +64,13 @@ class QueueStateService extends DataService<QueueConsoleState> {
     },
   ) {
     super(ctx, 'bili-live-music', { immediate: true })
-    const { queue, requests, config, entry } = deps
+    const { queue, player, requests, config, entry } = deps
     ctx.console.addEntry(entry)
 
     const releaseState = queue.onStateChange(() => void this.refresh())
+    const releasePlayback = player.subscribe(event => {
+      if (event.type === 'runtime' || event.type === 'available') void this.refresh()
+    })
     ctx.console.addListener('bili-live-music/state', async () => this.get(), { authority: 0 })
     ctx.console.addListener('bili-live-music/search', async ({ keyword }) => {
       const normalized = keyword?.trim()
@@ -141,9 +151,17 @@ class QueueStateService extends DataService<QueueConsoleState> {
       queue.clear()
       return true
     }, { authority: 0 })
+    ctx.console.addListener('bili-live-music/set-volume', async ({ volume }) => {
+      if (!Number.isFinite(volume)) throw new Error('音量必须是 0–100 之间的数字')
+      return player.setVolume(Math.max(0, Math.min(100, Math.round(volume))))
+    }, { authority: 0 })
+    ctx.console.addListener('bili-live-music/vlc-detect', async () => player.detect(), { authority: 3 })
+    ctx.console.addListener('bili-live-music/vlc-devices', async () => player.listAudioDevices(), { authority: 3 })
+    ctx.console.addListener('bili-live-music/vlc-restart', async () => player.restart(), { authority: 3 })
 
     ctx.on('dispose', () => {
       releaseState()
+      releasePlayback()
       this.searches.clear()
     })
   }
@@ -154,6 +172,7 @@ class QueueStateService extends DataService<QueueConsoleState> {
       provider: this.deps.requests.describeProvider(),
       fontUrl: this.deps.fontUrl,
       playerReady: this.deps.queue.isPlayerReady(),
+      playback: this.deps.player.getRuntimeState(),
     }
   }
 }
@@ -161,12 +180,13 @@ class QueueStateService extends DataService<QueueConsoleState> {
 export function registerConsoleApi(
   ctx: Context,
   queue: QueueManager,
+  player: PlaybackBackend,
   requests: SongRequestService,
   config: Config,
   fontUrl: string,
   entry: { dev: string; prod: string },
 ) {
-  ctx.plugin(QueueStateService, { queue, requests, config, fontUrl, entry })
+  ctx.plugin(QueueStateService, { queue, player, requests, config, fontUrl, entry })
 }
 
 function pruneSearches(searches: Map<string, { expiresAt: number }>): void {
