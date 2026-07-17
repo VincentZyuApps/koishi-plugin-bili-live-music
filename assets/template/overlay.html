@@ -1,49 +1,198 @@
 <!doctype html>
-<html lang="zh-CN" data-overlay-version="2">
+<html lang="zh-CN" data-overlay-version="9">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>bili-live-music</title>
   <style>
-    html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; font-family: system-ui, sans-serif; }
-    .panel { position: fixed; left: 24px; bottom: 24px; min-width: 360px; max-width: 720px; padding: 16px 18px; color: #fff; background: rgba(0, 0, 0, .55); border-radius: 8px; box-sizing: border-box; }
-    .title { font-size: 22px; font-weight: 700; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .meta { margin-top: 6px; font-size: 15px; opacity: .86; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .queue { margin-top: 10px; font-size: 13px; opacity: .75; }
-    .empty { opacity: .65; }
-    .device-control { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; opacity: .45; transition: opacity .2s ease; }
-    .panel:hover .device-control, .device-control:focus-within { opacity: 1; }
-    .role-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #9ca3af; }
-    .device-control.player .role-dot { background: #36d399; box-shadow: 0 0 0 3px rgba(54, 211, 153, .18); }
-    .role-label { flex: 1; }
-    .claim-button { min-height: 28px; padding: 4px 9px; border: 1px solid rgba(255, 255, 255, .34); border-radius: 5px; color: #fff; background: rgba(255, 255, 255, .1); cursor: pointer; }
-    .claim-button:hover { background: rgba(255, 255, 255, .2); }
-    .claim-button[hidden] { display: none; }
+    @font-face {
+      font-family: "BiliLiveMusicLXGW";
+      src: url(__FONT_URL__) format("truetype");
+      font-display: swap;
+    }
+
+    :root {
+      color-scheme: dark;
+      font-family: "BiliLiveMusicLXGW", "Microsoft YaHei UI", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+    body { display: grid; place-items: center; letter-spacing: 0; }
+
+    .shell {
+      position: relative;
+      max-width: 100vw;
+      max-height: 100vh;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      color: #f8fafc;
+      background: rgba(22, 24, 29, .92);
+      border: 1px solid rgba(255, 255, 255, .14);
+      border-radius: 8px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, .24);
+    }
+
+    .cover-wrap { position: relative; overflow: hidden; background: #30343b; }
+    .cover { width: 100%; height: 100%; display: block; object-fit: cover; }
+    .cover-fallback { width: 100%; height: 100%; display: grid; place-items: center; color: #aeb5c0; font-size: 36px; }
+    .content { min-width: 0; }
+    .eyebrow { color: #f08aaa; font-size: 12px; font-weight: 700; }
+    .title { margin-top: 3px; overflow: hidden; font-size: 21px; font-weight: 700; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+    .title.empty { color: #c4cad3; }
+    .artist { margin-top: 5px; overflow: hidden; color: #d7dce3; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+    .meta { margin-top: 5px; overflow: hidden; color: #9fa7b2; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+
+    .progress-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+    .progress-track { height: 4px; flex: 1; overflow: hidden; border-radius: 2px; background: rgba(255, 255, 255, .14); }
+    .progress-value { width: 0; height: 100%; background: #ef6f9a; transition: width .25s linear; }
+    .time { min-width: 70px; color: #aeb5bf; font-size: 11px; text-align: right; }
+
+    .queue-block { min-width: 0; }
+    .queue-heading { display: flex; justify-content: space-between; color: #b8bec8; font-size: 12px; }
+    .queue-list { margin-top: 7px; border-top: 1px solid rgba(255, 255, 255, .1); }
+    .queue-item { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 6px; padding: 7px 0; border-bottom: 1px solid rgba(255, 255, 255, .08); }
+    .queue-index { color: #ef8dac; font-size: 11px; }
+    .queue-song { overflow: hidden; color: #e4e7ec; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .queue-empty { padding-top: 8px; color: #858e9a; font-size: 12px; }
+
+    .device {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 24px;
+      padding: 3px 7px;
+      border-radius: 5px;
+      color: #cbd1da;
+      background: rgba(7, 9, 12, .68);
+      font-size: 10px;
+      opacity: .5;
+    }
+    .role-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: #8d96a2; }
+    body[data-role="player"] .role-dot { background: #49c98b; }
+    .claim { min-height: 22px; padding: 2px 7px; border: 1px solid rgba(255, 255, 255, .25); border-radius: 4px; color: #fff; background: #343942; cursor: pointer; font: inherit; }
+    .claim[hidden] { display: none; }
+
+    .controls {
+      position: absolute;
+      z-index: 4;
+      left: 50%;
+      bottom: 8px;
+      display: flex;
+      gap: 6px;
+      padding: 5px;
+      border: 1px solid rgba(255, 255, 255, .14);
+      border-radius: 6px;
+      background: rgba(7, 9, 12, .82);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(-50%);
+      transition: opacity .15s ease;
+    }
+    body[data-role="player"]:hover .controls, .controls:focus-within { opacity: 1; pointer-events: auto; }
+    .control-button { width: 32px; height: 30px; padding: 0; border: 1px solid rgba(255, 255, 255, .18); border-radius: 5px; color: #f8fafc; background: #292d34; cursor: pointer; font: inherit; }
+    .control-button:hover:not(:disabled) { border-color: #ef8dac; color: #ffb3ca; }
+    .control-button:disabled { cursor: not-allowed; opacity: .35; }
+    .control-button.primary { background: #c83f70; border-color: #db5c89; }
+
+    body[data-layout="mini"] .shell { display: grid; width: 520px; height: 104px; grid-template-columns: 82px minmax(0, 1fr); padding: 9px; gap: 11px; }
+    body[data-layout="mini"] .cover-wrap { border-radius: 5px; aspect-ratio: 1; height: 100%; max-height: 82px; align-self: center; }
+    body[data-layout="mini"] .content { align-self: center; padding-right: 6px; }
+    body[data-layout="mini"] .eyebrow { display: none; }
+    body[data-layout="mini"] .title { margin-top: 0; font-size: 18px; }
+    body[data-layout="mini"] .artist { margin-top: 3px; font-size: 12px; }
+    body[data-layout="mini"] .meta { display: none; }
+    body[data-layout="mini"] .progress-row { margin-top: 7px; }
+    body[data-layout="mini"] .queue-block { display: none; }
+    body[data-layout="mini"] .device { top: 5px; right: 5px; }
+
+    body[data-layout="standard"] .shell { display: grid; width: 640px; height: 240px; grid-template-columns: 208px minmax(0, 1fr); grid-template-rows: 1fr; gap: 18px; padding: 16px; }
+    body[data-layout="standard"] .cover-wrap { align-self: stretch; border-radius: 6px; aspect-ratio: 1; max-height: 100%; }
+    body[data-layout="standard"] .content { display: flex; min-height: 0; flex-direction: column; justify-content: center; padding-right: 4px; }
+    body[data-layout="standard"] .queue-block { margin-top: 12px; }
+    body[data-layout="standard"] .queue-item:nth-child(n+3) { display: none; }
+
+    body[data-layout="sidebar"] .shell { display: flex; width: 300px; height: 666.666666px; flex-direction: column; padding: 14px; }
+    body[data-layout="sidebar"] .cover-wrap { width: min(100%, 252px); margin: 0 auto; border-radius: 6px; aspect-ratio: 1; flex: 0 0 auto; }
+    body[data-layout="sidebar"] .content { margin-top: 14px; }
+    body[data-layout="sidebar"] .title { font-size: 22px; }
+    body[data-layout="sidebar"] .queue-block { min-height: 0; margin-top: 18px; overflow: hidden; }
+    body[data-layout="sidebar"] .queue-item:nth-child(n+6) { display: none; }
+
+    @media (max-width: 360px) {
+      .title { font-size: 17px; }
+      .device { max-width: 150px; }
+      .role-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    }
   </style>
 </head>
 <body>
-  <div class="panel">
-    <div id="title" class="title empty">等待点歌</div>
-    <div id="meta" class="meta">OBS 浏览器源已就绪</div>
-    <div id="queue" class="queue"></div>
-    <div id="device" class="device-control">
-      <span class="role-dot" aria-hidden="true"></span>
-      <span id="role-label" class="role-label">正在连接播放服务</span>
-      <button id="claim" class="claim-button" type="button" hidden>设为主播放器</button>
+  <main class="shell">
+    <div class="cover-wrap">
+      <img id="cover" class="cover" alt="" hidden>
+      <div id="cover-fallback" class="cover-fallback" aria-hidden="true">♫</div>
     </div>
-  </div>
-  <audio id="audio" crossorigin="anonymous"></audio>
+
+    <section class="content">
+      <div class="eyebrow">NOW PLAYING</div>
+      <div id="title" class="title empty">等待点歌</div>
+      <div id="artist" class="artist">播放器已就绪</div>
+      <div id="meta" class="meta">等待新的歌曲进入队列</div>
+      <div class="progress-row">
+        <div class="progress-track"><div id="progress" class="progress-value"></div></div>
+        <div id="time" class="time">00:00 / 00:00</div>
+      </div>
+
+      <div class="queue-block">
+        <div class="queue-heading"><span>接下来播放</span><span id="queue-count">0 首</span></div>
+        <div id="queue-list" class="queue-list"><div class="queue-empty">队列为空</div></div>
+      </div>
+    </section>
+
+    <div id="device" class="device">
+      <span class="role-dot" aria-hidden="true"></span>
+      <span id="role-label" class="role-label">正在连接</span>
+      <button id="claim" class="claim" type="button" hidden>设为主播放器</button>
+    </div>
+
+    <div class="controls" aria-label="播放控制">
+      <button id="previous" class="control-button" type="button" title="上一首" aria-label="上一首">⏮</button>
+      <button id="toggle" class="control-button primary" type="button" title="暂停" aria-label="暂停">⏸</button>
+      <button id="next" class="control-button" type="button" title="下一首" aria-label="下一首">⏭</button>
+    </div>
+  </main>
+
+  <audio id="audio"></audio>
   <script>
     const wsPath = __WS_PATH__
+    const layout = __LAYOUT__
     const audio = document.getElementById('audio')
+    const cover = document.getElementById('cover')
+    const coverFallback = document.getElementById('cover-fallback')
     const title = document.getElementById('title')
+    const artist = document.getElementById('artist')
     const meta = document.getElementById('meta')
-    const queue = document.getElementById('queue')
-    const device = document.getElementById('device')
+    const progress = document.getElementById('progress')
+    const time = document.getElementById('time')
+    const queueCount = document.getElementById('queue-count')
+    const queueList = document.getElementById('queue-list')
     const roleLabel = document.getElementById('role-label')
     const claimButton = document.getElementById('claim')
+    const previousButton = document.getElementById('previous')
+    const toggleButton = document.getElementById('toggle')
+    const nextButton = document.getElementById('next')
     let socket
     let role = 'offline'
+    let state = { current: null, queue: [], history: [], playing: false, paused: false, position: 0 }
+    let activeItemId = ''
+    let lastProgressSentAt = 0
+
+    document.body.dataset.layout = layout
 
     function connect() {
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -57,6 +206,8 @@
         const message = JSON.parse(event.data)
         if (message.type === 'state') render(message.state)
         if (message.type === 'play') play(message.item)
+        if (message.type === 'pause') pauseAudio()
+        if (message.type === 'resume') resumeAudio(message.item)
         if (message.type === 'stop') stopAudio()
         if (message.type === 'role') setRole(message.role)
       })
@@ -73,50 +224,149 @@
 
     function play(item) {
       if (role !== 'player') return
-      render({ current: item, queue: [], playing: true })
+      activeItemId = item.id
       audio.src = item.song.url
-      audio.play().catch(error => send({ type: 'error', message: String(error && error.message || error) }))
+      audio.currentTime = 0
+      audio.play().catch(reportPlayError)
+    }
+
+    function pauseAudio() {
+      audio.pause()
+    }
+
+    function resumeAudio(item) {
+      if (role !== 'player' || !item) return
+      if (activeItemId !== item.id || !audio.getAttribute('src')) {
+        activeItemId = item.id
+        audio.src = item.song.url
+      }
+      audio.play().catch(reportPlayError)
     }
 
     function stopAudio() {
       audio.pause()
       audio.removeAttribute('src')
       audio.load()
+      activeItemId = ''
+    }
+
+    function reportPlayError(error) {
+      send({ type: 'error', message: String(error && error.message || error) })
     }
 
     function setRole(nextRole) {
       role = nextRole
-      device.classList.toggle('player', role === 'player')
-      roleLabel.textContent = role === 'player'
-        ? '当前设备：主播放器'
-        : role === 'display'
-          ? '当前设备：展示端'
-          : '播放服务连接已断开'
+      document.body.dataset.role = role
+      roleLabel.textContent = role === 'player' ? '主播放器' : role === 'display' ? '展示端' : '连接已断开'
       claimButton.hidden = role !== 'display'
       if (role !== 'player') stopAudio()
+      updateControls()
     }
 
-    function render(state) {
-      const current = state && state.current
+    function render(nextState) {
+      state = nextState || state
+      const current = state.current
       if (!current) {
         title.textContent = '等待点歌'
         title.classList.add('empty')
-        meta.textContent = '当前队列 ' + ((state && state.queue && state.queue.length) || 0) + ' 首'
+        artist.textContent = '播放器已就绪'
+        meta.textContent = '等待新的歌曲进入队列'
+        cover.hidden = true
+        coverFallback.hidden = false
       } else {
         title.textContent = current.song.title
         title.classList.remove('empty')
-        meta.textContent = current.song.artist + ' · ' + current.song.source + ' · 点歌: ' + current.requester.name
+        artist.textContent = current.song.artist
+        meta.textContent = sourceLabel(current.song.source) + ' · 点歌：' + current.requester.name
+        if (current.song.cover) {
+          cover.src = current.song.cover
+          cover.hidden = false
+          coverFallback.hidden = true
+        } else {
+          cover.hidden = true
+          coverFallback.hidden = false
+        }
       }
-      const rest = (state && state.queue) || []
-      queue.textContent = rest.length ? '下一首：' + rest.slice(0, 3).map(item => item.song.title).join(' / ') : ''
+
+      const queue = state.queue || []
+      queueCount.textContent = queue.length + ' 首'
+      queueList.replaceChildren()
+      if (!queue.length) {
+        const empty = document.createElement('div')
+        empty.className = 'queue-empty'
+        empty.textContent = '队列为空'
+        queueList.appendChild(empty)
+      } else {
+        queue.slice(0, layout === 'sidebar' ? 5 : 2).forEach((item, index) => {
+          const row = document.createElement('div')
+          row.className = 'queue-item'
+          const number = document.createElement('span')
+          number.className = 'queue-index'
+          number.textContent = String(index + 1).padStart(2, '0')
+          const song = document.createElement('span')
+          song.className = 'queue-song'
+          song.textContent = item.song.title + ' · ' + item.song.artist
+          row.append(number, song)
+          queueList.appendChild(row)
+        })
+      }
+      renderProgress(state.position || 0)
+      updateControls()
+    }
+
+    function updateControls() {
+      const isPlayer = role === 'player'
+      previousButton.disabled = !isPlayer || !(state.history && state.history.length)
+      toggleButton.disabled = !isPlayer || !state.current
+      nextButton.disabled = !isPlayer || !state.current
+      toggleButton.textContent = state.paused ? '▶' : '⏸'
+      toggleButton.title = state.paused ? '继续播放' : '暂停'
+      toggleButton.setAttribute('aria-label', toggleButton.title)
+    }
+
+    function renderProgress(position) {
+      const duration = state.current && state.current.song.duration || 0
+      const percent = duration ? Math.min(100, Math.max(0, position / duration * 100)) : 0
+      progress.style.width = percent + '%'
+      time.textContent = formatTime(position) + ' / ' + formatTime(duration)
+    }
+
+    function formatTime(value) {
+      const total = Math.max(0, Math.floor(Number(value || 0) / 1000))
+      return String(Math.floor(total / 60)).padStart(2, '0') + ':' + String(total % 60).padStart(2, '0')
+    }
+
+    function sourceLabel(source) {
+      return ({ netease: '网易云', tencent: 'QQ 音乐', kugou: '酷狗' })[source] || source
     }
 
     claimButton.addEventListener('click', () => send({ type: 'claim' }))
+    previousButton.addEventListener('click', () => send({ type: 'previous' }))
+    toggleButton.addEventListener('click', () => send({ type: state.paused ? 'resume' : 'pause' }))
+    nextButton.addEventListener('click', () => send({ type: 'next' }))
+    audio.addEventListener('timeupdate', () => {
+      if (role !== 'player' || !activeItemId) return
+      const position = Math.round(audio.currentTime * 1000)
+      renderProgress(position)
+      if (Date.now() - lastProgressSentAt >= 1000) {
+        lastProgressSentAt = Date.now()
+        send({ type: 'progress', itemId: activeItemId, position })
+      }
+    })
     audio.addEventListener('ended', () => {
       if (role === 'player') send({ type: 'ended' })
     })
     audio.addEventListener('error', () => {
-      if (role === 'player') send({ type: 'error', message: 'audio error' })
+      if (role !== 'player') return
+      const mediaError = audio.error
+      const details = mediaError
+        ? 'code=' + mediaError.code + (mediaError.message ? ', ' + mediaError.message : '')
+        : 'unknown media error'
+      send({ type: 'error', message: details + ', networkState=' + audio.networkState + ', readyState=' + audio.readyState })
+    })
+    cover.addEventListener('error', () => {
+      cover.hidden = true
+      coverFallback.hidden = false
     })
     connect()
   </script>

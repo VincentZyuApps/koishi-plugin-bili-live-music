@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { Context } from 'koishi'
 import { ensureSharedAssets, resolveOverlayTemplatePath } from './assets'
-import { Config as PluginConfig } from './config'
+import { Config as PluginConfig, normalizeConfig } from './config'
 import type { Config } from './config'
 import { BilibiliDanmuClient } from './danmu/client'
 import { parseSongRequest } from './danmu/parser'
@@ -12,34 +12,97 @@ import { QueueManager } from './queue/manager'
 import { SongRequestService } from './request/service'
 import { registerConsoleApi } from './console/api'
 import { startObsServer } from './server'
+import { acquireObsServerLease } from './server/lease'
+import { ensureFont, resolveFontPath } from './font'
 
 export const name = 'bili-live-music'
 export const inject = ['node']
 
 export { PluginConfig as Config }
 
-export async function apply(ctx: Context, config: Config) {
+export async function apply(ctx: Context, inputConfig: Config) {
+  const config = normalizeConfig(inputConfig)
   const logger = ctx.logger('bili-live-music')
+  let disposed = false
+  let player: BrowserPlayerAdapter | undefined
+  let releaseAvailability: (() => void) | undefined
+  let releaseObsServerLease: (() => void) | undefined
+  let obsServer: Awaited<ReturnType<typeof startObsServer>> | undefined
+  let obsServerStarting = false
+  let danmu: BilibiliDanmuClient | undefined
+
+  // Bind external Fastify/listener cleanup before the first await because HMR
+  // can dispose this plugin context while asynchronous startup is still running,
+  // This prevents an orphaned Fastify listener from retaining the OBS port.
+  ctx.on('dispose', async () => {
+    disposed = true
+    danmu?.stop()
+    releaseAvailability?.()
+    releaseAvailability = undefined
+    player?.dispose()
+    player = undefined
+    const server = obsServer
+    obsServer = undefined
+    if (!server && obsServerStarting) return
+    try {
+      await server?.close()
+    } finally {
+      releaseObsServerLease?.()
+      releaseObsServerLease = undefined
+    }
+  })
+
   await ensureSharedAssets(ctx, config.overlayTemplatePath).catch((error) => {
     logger.warn(`OBS 模板资源初始化失败: ${error instanceof Error ? error.message : String(error)}`)
   })
+  if (disposed) return
   config.overlayTemplatePath = resolveOverlayTemplatePath(ctx, config.overlayTemplatePath)
   const http = createHttpClient()
+  config.fontPath = resolveFontPath(ctx, config.fontPath)
+  await ensureFont(ctx, http, config.fontPath)
+  if (disposed) return
   const provider = createMusicProvider(ctx, config, http)
-  const player = new BrowserPlayerAdapter()
-  const queue = new QueueManager(config, player)
+  const activePlayer = new BrowserPlayerAdapter()
+  player = activePlayer
+  const queue = new QueueManager(config, activePlayer)
   const requests = new SongRequestService(provider, queue)
-  const releaseAvailability = player.onAvailabilityChange((available) => {
+  releaseAvailability = activePlayer.onAvailabilityChange((available) => {
     void queue.handlePlayerAvailability(available)
   })
-  const obsServer = await startObsServer(ctx, config, player, queue)
+  const releaseLease = await acquireObsServerLease(config.obsServerHost, config.obsServerPort)
+  if (disposed) {
+    releaseLease()
+    return
+  }
+  releaseObsServerLease = releaseLease
+  let startedObsServer: Awaited<ReturnType<typeof startObsServer>>
+  obsServerStarting = true
+  try {
+    startedObsServer = await startObsServer(ctx, config, activePlayer, queue)
+  } catch (error) {
+    obsServerStarting = false
+    releaseObsServerLease()
+    releaseObsServerLease = undefined
+    throw error
+  }
+  obsServerStarting = false
+  if (disposed) {
+    try {
+      await startedObsServer.close()
+    } finally {
+      releaseObsServerLease()
+      releaseObsServerLease = undefined
+    }
+    return
+  }
+  obsServer = startedObsServer
 
-  registerConsoleApi(ctx, queue, requests, config, {
+  registerConsoleApi(ctx, queue, requests, config, startedObsServer.fontUrl(), {
     dev: path.resolve(__dirname, '../client/index.ts'),
     prod: path.resolve(__dirname, '../dist'),
   })
 
-  const danmu = new BilibiliDanmuClient(ctx, config, http, async (message) => {
+  danmu = new BilibiliDanmuClient(ctx, config, http, async (message) => {
     const request = parseSongRequest(message.content, message.user, config.commandPrefix)
     if (!request) return
 
@@ -86,7 +149,7 @@ export async function apply(ctx: Context, config: Config) {
     const current = state.current
       ? `正在播放：${state.current.song.title} - ${state.current.song.artist}`
       : '当前没有播放中的歌曲'
-    return `${current}\n队列剩余：${state.queue.length} 首\nOBS 主播放器：${player.isReady() ? '已连接' : '未连接'}`
+    return `${current}\n队列剩余：${state.queue.length} 首\nOBS 主播放器：${activePlayer.isReady() ? '已连接' : '未连接'}`
   })
   ctx.command('bili-live-music.skip', '跳过当前歌曲', { authority: 3 }).action(async () => {
     await queue.skip()
@@ -97,17 +160,15 @@ export async function apply(ctx: Context, config: Config) {
     return '已清空点歌队列'
   })
   ctx.command('bili-live-music.overlay', '查看 OBS 浏览器源路径', { authority: 3 }).action(() => {
-    return [
-      `OBS 主播放器：${obsServer.overlayUrl('player')}`,
-      `OBS 展示端：${obsServer.overlayUrl('display')}`,
-    ].join('\n')
-  })
-
-  ctx.on('dispose', async () => {
-    danmu.stop()
-    releaseAvailability()
-    player.dispose()
-    await obsServer.close()
+    const message = [
+      `🎧 OBS 主播放器（标准）\n${startedObsServer.overlayUrl('player', 'standard')}`,
+      `🪶 OBS 展示端（迷你）\n${startedObsServer.overlayUrl('display', 'mini')}`,
+      `🖼️ OBS 展示端（标准）\n${startedObsServer.overlayUrl('display', 'standard')}`,
+      `📋 OBS 展示端（侧栏）\n${startedObsServer.overlayUrl('display', 'sidebar')}`,
+    ].join('\n\n')
+    logger.info(`OBS 浏览器源地址：\n${message}`)
+    if (config.overlayCommandConsoleOnly) return '🖥️ 请前往 Koishi Console 查看 OBS 浏览器源地址。'
+    return message
   })
 }
 

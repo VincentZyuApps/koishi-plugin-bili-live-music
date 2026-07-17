@@ -40,16 +40,21 @@ function isDefaultOverlayTemplatePath(ctx: Context, value: string): boolean {
 export async function ensureSharedAssets(ctx: Context, configuredTemplatePath = ''): Promise<void> {
   const sourcePath = getBundledAssetPath(OVERLAY_TEMPLATE_PARTS)
   const targetPath = getRuntimeOverlayTemplatePath(ctx.baseDir)
+  const bundled = readFileSync(sourcePath, 'utf8')
 
   await mkdir(path.dirname(targetPath), { recursive: true })
   if (existsSync(targetPath)) {
     const usesDefaultTemplate = !configuredTemplatePath.trim() || isDefaultOverlayTemplatePath(ctx, configuredTemplatePath)
     const existing = readFileSync(targetPath, 'utf8')
-    if (!usesDefaultTemplate || existing.includes('data-overlay-version="2"')) return
+    if (!usesDefaultTemplate || getOverlayTemplateVersion(existing) === getOverlayTemplateVersion(bundled)) return
   }
 
   await copyFile(sourcePath, targetPath)
   ctx.logger('bili-live-music').info(`📦 已更新 OBS 模板: ${targetPath}`)
+}
+
+function getOverlayTemplateVersion(template: string): string | undefined {
+  return template.match(/\bdata-overlay-version=["']([^"']+)["']/)?.[1]
 }
 
 export function resolveOverlayTemplatePath(ctx: Context, configuredPath: string): string {

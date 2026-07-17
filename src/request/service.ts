@@ -35,8 +35,17 @@ export class SongRequestService {
     requester: LiveUser,
     options: RequestOptions = {},
   ): Promise<QueueSubmission> {
-    const song = candidate.url ? candidate : await this.provider.resolve(candidate)
-    if (!song?.url) throw new Error(`无法获取歌曲播放地址: ${candidate.title}`)
+    let song: Song | null
+    try {
+      song = candidate.url ? candidate : await this.provider.resolve(candidate)
+    } catch (error) {
+      throw new Error(
+        `所选版本暂时无法播放：${candidate.title} - ${candidate.artist}；请尝试其他搜索结果或切换音乐 API。${error instanceof Error ? ` 原因：${error.message}` : ''}`,
+      )
+    }
+    if (!song?.url) {
+      throw new Error(`所选版本暂时没有可播放直链：${candidate.title} - ${candidate.artist}；请尝试其他搜索结果或切换音乐 API。`)
+    }
     return this.enqueue(song, requester, candidate.title, options)
   }
 

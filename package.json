@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-bili-live-music",
   "description": "B站直播间点歌，支持弹幕、Bot与WebUI队列管理，通过OBS浏览器源播放音频",
-  "version": "0.2.0-alpha.1+20260716",
+  "version": "0.2.0-alpha.2+20260717",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [

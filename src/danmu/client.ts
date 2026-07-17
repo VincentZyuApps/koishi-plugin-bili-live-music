@@ -27,9 +27,32 @@ export interface DanmuMessage {
   user: LiveUser
 }
 
+const DANMU_DEDUPE_WINDOW = 3_000
+
+export class DanmuDeduplicator {
+  private recent = new Map<string, number>()
+
+  constructor(private windowMs = DANMU_DEDUPE_WINDOW) {}
+
+  accept(key: string, now = Date.now()): boolean {
+    const lastSeen = this.recent.get(key)
+    if (lastSeen !== undefined && now - lastSeen < this.windowMs) return false
+    this.recent.set(key, now)
+    for (const [storedKey, timestamp] of this.recent) {
+      if (now - timestamp >= this.windowMs) this.recent.delete(storedKey)
+    }
+    return true
+  }
+
+  clear(): void {
+    this.recent.clear()
+  }
+}
+
 export class BilibiliDanmuClient {
   private listener?: { close(): void }
   private stopping = false
+  private deduplicator = new DanmuDeduplicator()
 
   constructor(
     private ctx: Context,
@@ -41,6 +64,7 @@ export class BilibiliDanmuClient {
   async start(): Promise<void> {
     const logger = this.ctx.logger('bili-live-music')
     this.stopping = false
+    this.deduplicator.clear()
     if (!this.config.enabled) return
     if (!this.config.roomId) {
       logger.warn('未配置 B 站直播间号，跳过弹幕监听')
@@ -102,6 +126,14 @@ export class BilibiliDanmuClient {
         const content = body?.content
         const user = body?.user
         if (!content || !user) return
+        const messageId = body.idStr ?? body.id ?? body.dmid ?? body.dm_id
+        const dedupeKey = messageId
+          ? `id:${messageId}`
+          : `content:${String(user.uid ?? '')}:${String(user.uname ?? user.name ?? '')}:${content}`
+        if (!this.deduplicator.accept(dedupeKey)) {
+          logger.debug(`忽略重复弹幕事件: ${String(user.uname ?? user.name ?? user.uid ?? 'unknown')} -> ${content}`)
+          return
+        }
         void this.onDanmu({
           content,
           user: {
@@ -121,6 +153,7 @@ export class BilibiliDanmuClient {
 
   stop(): void {
     this.stopping = true
+    this.deduplicator.clear()
     this.listener?.close()
     this.listener = undefined
   }

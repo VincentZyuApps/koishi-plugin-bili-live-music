@@ -8,9 +8,9 @@
         <h1>直播点歌</h1>
         <p class="provider">{{ state.provider || '正在连接音乐服务' }}</p>
       </div>
-      <div class="status" :class="state.playing ? 'playing' : 'idle'">
+      <div class="status" :class="state.playing ? 'playing' : state.paused ? 'paused' : !state.playerReady ? 'disconnected' : 'idle'">
         <span class="status-dot"></span>
-        {{ state.playing ? '播放中' : '空闲' }}
+        {{ state.playing ? '播放中' : state.paused ? '已暂停' : !state.playerReady ? '播放器未连接' : '空闲' }}
       </div>
     </header>
 
@@ -22,15 +22,11 @@
           <span class="eyebrow">当前播放</span>
           <h2>{{ state.current ? state.current.song.title : '暂无播放' }}</h2>
         </div>
-        <button
-          v-if="state.current"
-          class="command-button danger"
-          :disabled="busy.has('skip')"
-          @click="skipCurrent"
-        >
-          <span aria-hidden="true">⏭</span>
-          跳过
-        </button>
+        <div v-if="state.current || state.queue.length" class="playback-controls">
+          <button class="icon-button" title="上一首" aria-label="上一首" :disabled="!state.history.length || busy.has('previous')" @click="previousTrack">⏮</button>
+          <button class="icon-button primary-control" :title="playbackButtonLabel" :aria-label="playbackButtonLabel" :disabled="busy.has('toggle')" @click="togglePlayback">{{ !state.current || state.paused ? '▶' : '⏸' }}</button>
+          <button class="icon-button danger" title="下一首" aria-label="下一首" :disabled="!state.current || busy.has('skip')" @click="skipCurrent">⏭</button>
+        </div>
       </div>
 
       <div v-if="state.current" class="current-track">
@@ -40,6 +36,7 @@
           <strong>{{ state.current.song.artist }}</strong>
           <span>{{ sourceLabel(state.current.song.source) }}<template v-if="state.current.song.album"> · {{ state.current.song.album }}</template></span>
           <span>{{ formatDuration(state.current.song.duration) }} · {{ state.current.song.quality || '自动音质' }}</span>
+          <span>{{ formatPosition(state.position) }} / {{ formatPosition(state.current.song.duration) }}</span>
           <span>点歌人：{{ state.current.requester.name }} · {{ originLabel(state.current.requester.origin) }}</span>
         </div>
       </div>
@@ -171,7 +168,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { send, store } from '@koishijs/client'
 
 type MusicSource = 'netease' | 'tencent' | 'kugou'
@@ -182,6 +179,8 @@ interface Song {
   id?: string
   mid?: string
   hash?: string
+  hqHash?: string
+  sqHash?: string
   title: string
   artist: string
   album?: string
@@ -201,15 +200,21 @@ interface QueueItem {
 interface QueueState {
   current: QueueItem | null
   queue: QueueItem[]
+  history: QueueItem[]
   playing: boolean
+  paused: boolean
+  position: number
   provider: string
+  fontUrl: string
+  playerReady: boolean
 }
 
 interface SearchResponse { searchId: string; songs: Song[] }
 
 const rpc = send as (type: string, ...args: any[]) => Promise<any>
-const fallbackState: QueueState = { current: null, queue: [], playing: false, provider: '' }
+const fallbackState: QueueState = { current: null, queue: [], history: [], playing: false, paused: false, position: 0, provider: '', fontUrl: '', playerReady: false }
 const state = computed(() => (store['bili-live-music'] as QueueState | undefined) || fallbackState)
+const playbackButtonLabel = computed(() => !state.value.current ? '开始播放' : state.value.paused ? '继续播放' : '暂停')
 const keyword = ref('')
 const songs = ref<Song[]>([])
 const searchId = ref('')
@@ -219,6 +224,17 @@ const notice = ref('')
 const noticeType = ref<'success' | 'error'>('success')
 const busy = reactive(new Set<string>())
 let noticeTimer: number | undefined
+let loadedFontUrl = ''
+
+watch(() => state.value.fontUrl, async (url) => {
+  if (!url || url === loadedFontUrl || typeof FontFace === 'undefined') return
+  try {
+    const font = new FontFace('BiliLiveMusicLXGW', `url(${JSON.stringify(url)})`)
+    await font.load()
+    document.fonts.add(font)
+    loadedFontUrl = url
+  } catch {}
+}, { immediate: true })
 
 const sourceLabels: Record<MusicSource, string> = {
   netease: '网易云',
@@ -244,6 +260,11 @@ function originLabel(origin: RequestOrigin) {
 function formatDuration(duration: number) {
   if (!duration) return '--:--'
   const total = Math.round(duration / 1000)
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+}
+
+function formatPosition(duration: number) {
+  const total = Math.max(0, Math.round((duration || 0) / 1000))
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
@@ -319,6 +340,40 @@ async function skipCurrent() {
   }
 }
 
+async function previousTrack() {
+  busy.add('previous')
+  try {
+    const changed = await rpc('bili-live-music/previous')
+    showNotice(changed ? '已切换到上一首' : '没有可播放的历史歌曲', changed ? 'success' : 'error')
+  } catch (error) {
+    showNotice(`上一首失败：${messageOf(error)}`, 'error')
+  } finally {
+    busy.delete('previous')
+  }
+}
+
+async function togglePlayback() {
+  busy.add('toggle')
+  try {
+    const action = !state.value.current
+      ? 'bili-live-music/start'
+      : state.value.paused
+        ? 'bili-live-music/resume'
+        : 'bili-live-music/pause'
+    const changed = await rpc(action)
+    if (!changed) {
+      const message = !state.value.playerReady
+        ? 'OBS 主播放器未连接，请先打开 mode=player 页面'
+        : '当前播放状态无法执行此操作'
+      showNotice(message, 'error')
+    }
+  } catch (error) {
+    showNotice(`播放控制失败：${messageOf(error)}`, 'error')
+  } finally {
+    busy.delete('toggle')
+  }
+}
+
 async function clearQueue() {
   if (!window.confirm('清空所有等待歌曲？当前播放不会受影响。')) return
   busy.add('clear')
@@ -333,7 +388,8 @@ async function clearQueue() {
 }
 
 function messageOf(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
+  const message = error instanceof Error ? error.message : String(error)
+  return message.replace(/^Error:\s*/, '').split(/\r?\n/, 1)[0]
 }
 </script>
 
@@ -353,6 +409,7 @@ function messageOf(error: unknown) {
   color: var(--text);
   background: var(--k-main-bg, #f5f6f8);
   letter-spacing: 0;
+  font-family: 'BiliLiveMusicLXGW', system-ui, sans-serif;
 }
 
 .music-scrollbar {
@@ -392,6 +449,8 @@ h2 { margin-top: 4px; font-size: 20px; line-height: 1.3; }
 
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #8a929d; }
 .status.playing .status-dot { background: var(--success); box-shadow: 0 0 0 4px rgba(22, 131, 91, .12); }
+.status.paused .status-dot { background: #d18a16; box-shadow: 0 0 0 4px rgba(209, 138, 22, .12); }
+.status.disconnected .status-dot { background: var(--danger); box-shadow: 0 0 0 4px rgba(193, 62, 62, .12); }
 
 .notice {
   position: fixed;
@@ -481,6 +540,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .queue-actions-column { width: 168px; text-align: right; }
 .position-column { width: 42px; text-align: center; }
 .row-actions { display: flex; justify-content: flex-end; gap: 5px; }
+.playback-controls { display: flex; gap: 7px; }
 .icon-button {
   width: 32px;
   height: 32px;
@@ -492,6 +552,7 @@ tbody tr:last-child td { border-bottom: 0; }
   cursor: pointer;
 }
 .icon-button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-strong); }
+.icon-button.primary-control { color: #fff; border-color: var(--accent-strong); background: var(--accent-strong); }
 .icon-button.add { color: #fff; border-color: var(--success); background: var(--success); font-size: 20px; }
 .icon-button.danger { color: var(--danger); }
 .queue-heading-actions { display: flex; align-items: center; gap: 12px; }

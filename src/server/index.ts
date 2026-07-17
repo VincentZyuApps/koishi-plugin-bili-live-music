@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync } from 'node:fs'
 import { isIP } from 'node:net'
 import type { Context } from 'koishi'
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify'
@@ -7,10 +7,15 @@ import type { Config } from '../config'
 import { resolveOverlayTemplatePath } from '../assets'
 import { BrowserPlayerAdapter, type BrowserSocket } from '../player/browser'
 import { QueueManager } from '../queue/manager'
+import { FONT_ROUTE } from '../font'
+
+export type OverlayMode = 'player' | 'display'
+export type OverlayLayout = 'mini' | 'standard' | 'sidebar'
 
 export interface ObsServer {
   close(): Promise<void>
-  overlayUrl(mode?: 'player' | 'display'): string
+  overlayUrl(mode?: OverlayMode, layout?: OverlayLayout): string
+  fontUrl(): string
 }
 
 export async function startObsServer(
@@ -29,8 +34,18 @@ export async function startObsServer(
     if (!hasValidToken(request, config.obsAccessToken)) {
       return reply.code(401).type('text/plain; charset=utf-8').send('Unauthorized: invalid OBS access token')
     }
-    const mode = getQuery(request, 'mode') === 'display' ? 'display' : 'player'
-    return reply.type('text/html; charset=utf-8').send(renderOverlay(ctx, config, mode))
+    const mode = parseMode(getQuery(request, 'mode'))
+    const layout = parseLayout(getQuery(request, 'layout'))
+    return reply.type('text/html; charset=utf-8').send(renderOverlay(ctx, config, mode, layout))
+  })
+
+  app.get(FONT_ROUTE, async (_request, reply) => {
+    if (!existsSync(config.fontPath)) return reply.code(404).send('Font unavailable')
+    return reply
+      .header('Access-Control-Allow-Origin', '*')
+      .header('Cache-Control', 'public, max-age=31536000, immutable')
+      .type('font/ttf')
+      .send(createReadStream(config.fontPath))
   })
 
   app.get(config.wsPath, { websocket: true }, (socket, request) => {
@@ -39,9 +54,13 @@ export async function startObsServer(
       return
     }
 
-    const mode = getQuery(request, 'mode') === 'display' ? 'display' : 'player'
+    const mode = parseMode(getQuery(request, 'mode'))
     const browserSocket = socket as BrowserSocket
     player.addSocket(browserSocket, mode)
+    logger.info(`🎧 OBS 页面已连接: mode=${mode}，主播放器=${player.isPrimary(browserSocket) ? '是' : '否'}`)
+    socket.addEventListener('close', () => {
+      logger.info(`🔌 OBS 页面已断开: mode=${mode}`)
+    })
 
     socket.addEventListener('message', (event) => {
       let message: any
@@ -51,7 +70,8 @@ export async function startObsServer(
         return
       }
       if (message.type === 'claim') {
-        player.claim(browserSocket)
+        const claimed = player.claim(browserSocket)
+        logger.info(`🎧 OBS 页面请求接管主播放器: ${claimed ? '成功' : '失败'}`)
         return
       }
       if (message.type === 'ready') {
@@ -60,6 +80,11 @@ export async function startObsServer(
       }
       if (!player.isPrimary(browserSocket)) return
       if (message.type === 'ended') void queue.handleEnded()
+      if (message.type === 'previous') void queue.previous()
+      if (message.type === 'next') void queue.skip()
+      if (message.type === 'pause') void queue.pause()
+      if (message.type === 'resume') void queue.resume()
+      if (message.type === 'progress') queue.handleProgress(String(message.itemId || ''), Number(message.position))
       if (message.type === 'error') {
         logger.warn(`浏览器源播放失败: ${message.message || 'unknown error'}`)
         queue.handlePlayerError()
@@ -84,28 +109,48 @@ export async function startObsServer(
 
   return {
     close: () => app.close(),
-    overlayUrl: (mode = 'player') => urls[mode],
+    overlayUrl: (mode = 'player', layout = 'standard') => createOverlayUrl(config, mode, layout),
+    fontUrl: () => createFontUrl(config),
   }
 }
 
 export function createOverlayUrls(config: Config): Record<'player' | 'display', string> {
-  const base = new URL(`http://${formatPublicHost(config.obsPublicHost)}:${config.obsServerPort}${config.overlayPath}`)
-  if (config.obsAccessToken) base.searchParams.set('token', config.obsAccessToken)
-
-  const player = new URL(base)
-  player.searchParams.set('mode', 'player')
-  const display = new URL(base)
-  display.searchParams.set('mode', 'display')
-  return { player: player.toString(), display: display.toString() }
+  return {
+    player: createOverlayUrl(config, 'player', 'standard'),
+    display: createOverlayUrl(config, 'display', 'standard'),
+  }
 }
 
-function renderOverlay(ctx: Context, config: Config, mode: 'player' | 'display'): string {
+export function createOverlayUrl(config: Config, mode: OverlayMode, layout: OverlayLayout): string {
+  const url = new URL(`http://${formatPublicHost(config.obsPublicHost)}:${config.obsServerPort}${config.overlayPath}`)
+  if (config.obsAccessToken) url.searchParams.set('token', config.obsAccessToken)
+  url.searchParams.set('mode', mode)
+  url.searchParams.set('layout', layout)
+  return url.toString()
+}
+
+export function createFontUrl(config: Config): string {
+  return new URL(`http://${formatPublicHost(config.obsPublicHost)}:${config.obsServerPort}${FONT_ROUTE}`).toString()
+}
+
+function renderOverlay(ctx: Context, config: Config, mode: OverlayMode, layout: OverlayLayout): string {
   const templatePath = resolveOverlayTemplatePath(ctx, config.overlayTemplatePath)
   const template = readFileSync(templatePath, 'utf8')
   const wsUrl = new URL(config.wsPath, 'http://localhost')
   if (config.obsAccessToken) wsUrl.searchParams.set('token', config.obsAccessToken)
   wsUrl.searchParams.set('mode', mode)
-  return template.replace('__WS_PATH__', JSON.stringify(`${wsUrl.pathname}${wsUrl.search}`))
+  return template
+    .replace('__WS_PATH__', JSON.stringify(`${wsUrl.pathname}${wsUrl.search}`))
+    .replace('__FONT_URL__', JSON.stringify(createFontUrl(config)))
+    .replace('__LAYOUT__', JSON.stringify(layout))
+}
+
+function parseMode(value: string): OverlayMode {
+  return value === 'display' ? 'display' : 'player'
+}
+
+function parseLayout(value: string): OverlayLayout {
+  return value === 'mini' || value === 'sidebar' ? value : 'standard'
 }
 
 function hasValidToken(request: FastifyRequest, expected: string): boolean {

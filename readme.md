@@ -47,6 +47,8 @@ http://xwl.vincentzyu233.cn:51217
 
 WebUI 默认返回最多 20 条候选结果。搜索阶段只获取元数据，点击加入队列时才解析播放 URL。
 
+`verboseConsoleLog` 默认关闭。开启后，控制台会在普通操作摘要之外输出 WebUI 搜索标识、候选歌曲 ID、音乐源请求参数、响应摘要和耗时；带签名的完整播放直链不会写入日志。
+
 ## 使用
 
 1. 在 Koishi 中启用 `w-node` 和本插件；队列管理 WebUI 还需要启用 `console`。
@@ -54,7 +56,7 @@ WebUI 默认返回最多 20 条候选结果。搜索阶段只获取元数据，�
 3. 按需选择 `enabledSources`；使用酷狗时需将 `apiBaseUrl` 切换到支持酷狗的 API。
 4. 保持默认 OBS 独立服务配置，或按需修改监听地址、端口、展示地址和访问令牌。
 5. 在 OBS 中添加浏览器源，地址填写插件日志或 `bili-live-music.overlay` 指令返回的主播放器地址。
-6. 默认地址为 `http://127.0.0.1:60716/bili-live-music/overlay?token=test12345&mode=player`。
+6. 默认地址为 `http://127.0.0.1:60716/bili-live-music/overlay?token=test12345&mode=player&layout=standard`。
 7. 在直播间发送 `点歌 晴天`。
 
 ### OBS 独立服务
@@ -66,17 +68,39 @@ WebUI 默认返回最多 20 条候选结果。搜索阶段只获取元数据，�
 | `obsPublicHost` | `127.0.0.1` | 仅用于生成展示地址；跨机器连接时填写局域网 IP、公网 IP 或域名。 |
 | `obsAccessToken` | `test12345` | 页面与 WebSocket 访问令牌；默认值仅用于测试，正式使用时必须修改。 |
 
-主播放器会实际播放音频，并向插件报告播放结束或失败。展示端只显示当前歌曲和队列，不播放音频，也不能推进队列。
+主播放器会实际播放音频，并向插件报告播放进度、结束或失败。展示端只显示当前歌曲和队列，不播放音频，也不能推进队列。
 
 ```text
 # 主播放器，适合 OBS 浏览器源
-http://127.0.0.1:60716/bili-live-music/overlay?token=test12345&mode=player
+http://127.0.0.1:60716/bili-live-music/overlay?token=test12345&mode=player&layout=standard
 
 # 展示端，适合第二个 OBS 场景或普通浏览器监看
-http://127.0.0.1:60716/bili-live-music/overlay?token=test12345&mode=display
+http://127.0.0.1:60716/bili-live-music/overlay?token=test12345&mode=display&layout=standard
 ```
 
-页面中的设备状态组件会显示当前角色。展示端可点击“设为主播放器”接管播放，旧主播放器会停止音频并降级为展示端。没有主播放器时，新点歌曲目只进入等待队列；主播放器重连后，当前歌曲会从头播放。
+`layout` 与播放角色相互独立，支持以下三种紧凑画布布局：
+
+| layout | OBS 推荐尺寸 | 内容 |
+| --- | --- | --- |
+| `mini` | `520 × 104` | 封面、歌名、歌手和进度，适合角落。 |
+| `standard` | `640 × 240` | 当前歌曲、点歌人、进度和后续 2 首。 |
+| `sidebar` | `300 × 666.666666` | 大封面、完整歌曲信息和后续 5 首。 |
+
+页面组件使用上表的固定尺寸，即使浏览器源画布更大也不会横向拉伸，而是在透明画布中居中显示。建议 OBS 浏览器源直接使用对应推荐尺寸，位置和整体缩放在 OBS 中调整。
+
+页面中的设备状态组件会显示当前角色。展示端可点击“设为主播放器”接管播放，旧主播放器会停止音频并降级为展示端。没有主播放器时，新点歌曲目只进入等待队列；主播放器重连后，当前歌曲会从头播放。OBS 临时预览连接关闭时，服务端会优先把角色交还给仍在线的 `mode=player` 页面，不会让 `mode=display` 自动发声。
+
+主播放器悬停时会显示上一首、播放/暂停和下一首按钮。在 OBS 中可通过“与浏览器源交互”操作。最近播放历史默认保留 25 首，可通过 `historyLimit` 修改；历史只保存在内存中，插件重启后清空。
+
+插件会自动将 `LXGWWenKaiMono-Regular.ttf` 下载到 `ctx.baseDir/data/assets/bili-live-music/fonts`，依次尝试 Gitee 和 GitHub，并校验文件大小与 SHA-256。Overlay 与 Console WebUI 共用 Fastify 字体路由；下载失败、HTTPS 页面阻止 HTTP 字体或字体服务不可达时会回退到系统字体。
+
+在 OBS 的“来源”面板点击 `+`，选择“浏览器”，并按以下方式设置：
+
+- URL 填写上面的 `mode=player` 主播放器地址，不要填写 `mode=display` 地址。
+- 宽度和高度建议与画布一致，例如 `1920 × 1080`；页面背景透明，歌曲信息显示在左下角。
+- 建议启用“通过 OBS 控制音频”，让音乐进入 OBS 混音器；需要本机也听见时，在“高级音频属性”中将监听设为“监听并输出”。
+- 建议关闭“场景变为活动状态时刷新浏览器”和“场景不可见时关闭源”，否则切换场景会断开播放器并让当前歌曲从头播放。
+- 同一时间只保留一个 `mode=player` 页面。其他场景或浏览器监看请使用 `mode=display`，避免主播放器被后打开的页面接管。
 
 Fastify 仅提供 HTTP。需要公网 HTTPS 时，请使用 Nginx、Caddy 等反向代理管理 TLS。
 

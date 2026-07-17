@@ -10,18 +10,26 @@ export interface BrowserSocket {
 
 export class BrowserPlayerAdapter implements PlayerAdapter {
   private sockets = new Set<BrowserSocket>()
+  private socketModes = new Map<BrowserSocket, 'player' | 'display'>()
   private primary?: BrowserSocket
-  private state: PlayerState = { current: null, queue: [], playing: false }
+  private state: PlayerState = { current: null, queue: [], history: [], playing: false, paused: false, position: 0 }
   private availabilityListeners = new Set<(available: boolean) => void>()
 
   addSocket(socket: BrowserSocket, mode: 'player' | 'display'): void {
     this.sockets.add(socket)
+    this.socketModes.set(socket, mode)
     this.send(socket, { type: 'state', state: this.state })
     this.send(socket, { type: 'role', role: 'display' })
     socket.addEventListener('close', () => {
       this.sockets.delete(socket)
+      this.socketModes.delete(socket)
       if (this.primary !== socket) return
       this.primary = undefined
+      const fallback = [...this.sockets].reverse().find(candidate => this.socketModes.get(candidate) === 'player')
+      if (fallback) {
+        this.claim(fallback)
+        return
+      }
       this.emitAvailability(false)
     })
     if (mode === 'player') this.claim(socket)
@@ -61,6 +69,14 @@ export class BrowserPlayerAdapter implements PlayerAdapter {
     if (this.primary) this.send(this.primary, { type: 'play', item })
   }
 
+  async pause(): Promise<void> {
+    if (this.primary) this.send(this.primary, { type: 'pause' })
+  }
+
+  async resume(item: QueueItem): Promise<void> {
+    if (this.primary) this.send(this.primary, { type: 'resume', item })
+  }
+
   async stop(): Promise<void> {
     if (this.primary) this.send(this.primary, { type: 'stop' })
   }
@@ -78,6 +94,7 @@ export class BrowserPlayerAdapter implements PlayerAdapter {
   dispose(): void {
     for (const socket of this.sockets) socket.close()
     this.sockets.clear()
+    this.socketModes.clear()
     this.primary = undefined
     this.availabilityListeners.clear()
   }

@@ -45,6 +45,8 @@ export interface Song {
   id?: string
   mid?: string
   hash?: string
+  hqHash?: string
+  sqHash?: string
   albumId?: string
   albumAudioId?: string
   lyricId?: string
@@ -72,7 +74,10 @@ export interface QueueItem {
 export interface PlayerState {
   current: QueueItem | null
   queue: QueueItem[]
+  history: QueueItem[]
   playing: boolean
+  paused: boolean
+  position: number
 }
 
 export interface QueueSubmission {

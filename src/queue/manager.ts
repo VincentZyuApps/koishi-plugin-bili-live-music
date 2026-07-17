@@ -10,9 +10,12 @@ export type QueueMoveAction = 'top' | 'up' | 'down'
 
 export class QueueManager {
   private queue: QueueItem[] = []
+  private history: QueueItem[] = []
   private current: QueueItem | null = null
   private lastRequestAt = new Map<string, number>()
   private playing = false
+  private paused = false
+  private position = 0
   private listeners = new Set<(state: PlayerState) => void>()
 
   constructor(private config: Config, private player: PlayerAdapter) {}
@@ -21,8 +24,15 @@ export class QueueManager {
     return {
       current: this.current,
       queue: [...this.queue],
+      history: [...this.history],
       playing: this.playing,
+      paused: this.paused,
+      position: this.position,
     }
+  }
+
+  isPlayerReady(): boolean {
+    return this.player.isReady()
   }
 
   add(song: Song, requester: LiveUser, keyword: string, options: QueueAddOptions = {}): QueueItem {
@@ -93,9 +103,50 @@ export class QueueManager {
 
   async skip(): Promise<void> {
     await this.player.stop()
-    this.current = null
-    this.playing = false
+    this.finishCurrent()
     await this.playNextIfIdle()
+  }
+
+  async previous(): Promise<boolean> {
+    const previous = this.history.pop()
+    if (!previous) return false
+    await this.player.stop()
+    if (this.current) this.queue.unshift(this.current)
+    this.current = previous
+    this.position = 0
+    this.paused = false
+    this.playing = this.player.isReady()
+    this.broadcast()
+    if (this.playing) await this.player.play(previous)
+    return true
+  }
+
+  async pause(): Promise<boolean> {
+    if (!this.current || !this.playing) return false
+    await this.player.pause()
+    this.playing = false
+    this.paused = true
+    this.broadcast()
+    return true
+  }
+
+  async start(): Promise<boolean> {
+    if (this.current) {
+      if (this.paused) return this.resume()
+      return this.playing
+    }
+    if (!this.player.isReady() || !this.queue.length) return false
+    await this.playNextIfIdle()
+    return Boolean(this.current && this.playing)
+  }
+
+  async resume(): Promise<boolean> {
+    if (!this.current || !this.paused || !this.player.isReady()) return false
+    this.playing = true
+    this.paused = false
+    this.broadcast()
+    await this.player.resume(this.current)
+    return true
   }
 
   clear(): void {
@@ -104,20 +155,23 @@ export class QueueManager {
   }
 
   async handleEnded(): Promise<void> {
-    this.current = null
-    this.playing = false
+    this.finishCurrent()
     await this.playNextIfIdle()
   }
 
   async handlePlayerAvailability(available: boolean): Promise<void> {
     if (!available) {
-      if (!this.playing) return
-      this.playing = false
+      if (this.playing) this.playing = false
       this.broadcast()
       return
     }
     if (this.current) {
+      if (this.paused) {
+        this.broadcast()
+        return
+      }
       this.playing = true
+      this.position = 0
       this.broadcast()
       await this.player.play(this.current)
       return
@@ -126,9 +180,14 @@ export class QueueManager {
   }
 
   handlePlayerError(): void {
-    this.current = null
-    this.playing = false
+    this.finishCurrent()
     void this.playNextIfIdle()
+  }
+
+  handleProgress(itemId: string, position: number): void {
+    if (this.current?.id !== itemId || !Number.isFinite(position)) return
+    this.position = Math.max(0, Math.min(position, this.current.song.duration || position))
+    this.broadcast()
   }
 
   onStateChange(listener: (state: PlayerState) => void): () => void {
@@ -137,7 +196,7 @@ export class QueueManager {
   }
 
   private async playNextIfIdle(): Promise<void> {
-    if (this.playing || this.current) return
+    if (this.playing || this.current || this.paused) return
     if (!this.player.isReady()) {
       this.broadcast()
       return
@@ -149,6 +208,8 @@ export class QueueManager {
     }
     this.current = next
     this.playing = true
+    this.paused = false
+    this.position = 0
     this.broadcast()
     await this.player.play(next)
   }
@@ -157,5 +218,18 @@ export class QueueManager {
     const state = this.getState()
     this.player.broadcast(state)
     for (const listener of this.listeners) listener(state)
+  }
+
+  private finishCurrent(): void {
+    if (this.current) {
+      this.history.push(this.current)
+      if (this.history.length > this.config.historyLimit) {
+        this.history.splice(0, this.history.length - this.config.historyLimit)
+      }
+    }
+    this.current = null
+    this.playing = false
+    this.paused = false
+    this.position = 0
   }
 }
