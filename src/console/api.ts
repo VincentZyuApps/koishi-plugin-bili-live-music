@@ -8,14 +8,21 @@ import { QueueManager } from '../queue/manager'
 import type { PlaybackBackend, PlaybackRuntimeState, AudioDeviceInfo, PlaybackDiagnostic } from '../player/types'
 import { SongRequestService } from '../request/service'
 import { logInfo } from '../utils/logger'
-
-const SEARCH_TTL_MS = 5 * 60_000
+import { BilibiliDanmuManager } from '../danmu/manager'
+import type { DanmuReconnectResult, DanmuRuntimeState, DanmuStateTransition } from '../danmu/types'
 
 export interface QueueConsoleState extends PlayerState {
   provider: string
   fontUrl: string
+  searchExpireMinutes: number
   playerReady: boolean
   playback: PlaybackRuntimeState
+  danmu: DanmuRuntimeState
+  danmuHistory: DanmuStateTransition[]
+  features: {
+    musicManagementPage: boolean
+    danmuStateMachinePage: boolean
+  }
 }
 
 export interface SearchResponse {
@@ -46,17 +53,19 @@ declare module '@koishijs/plugin-console' {
     'bili-live-music/vlc-detect'(): Promise<PlaybackDiagnostic>
     'bili-live-music/vlc-devices'(): Promise<AudioDeviceInfo[]>
     'bili-live-music/vlc-restart'(): Promise<boolean>
+    'bili-live-music/danmu-reconnect'(): Promise<DanmuReconnectResult>
   }
 }
 
 class QueueStateService extends DataService<QueueConsoleState> {
-  private searches = new Map<string, { expiresAt: number; songs: Song[] }>()
+  private searches = new Map<string, { expiresAt: number | null; songs: Song[] }>()
 
   constructor(
     ctx: Context,
     private deps: {
       queue: QueueManager
       player: PlaybackBackend
+      danmu: BilibiliDanmuManager
       requests: SongRequestService
       config: Config
       fontUrl: string
@@ -64,13 +73,14 @@ class QueueStateService extends DataService<QueueConsoleState> {
     },
   ) {
     super(ctx, 'bili-live-music', { immediate: true })
-    const { queue, player, requests, config, entry } = deps
+    const { queue, player, danmu, requests, config, entry } = deps
     ctx.console.addEntry(entry)
 
     const releaseState = queue.onStateChange(() => void this.refresh())
     const releasePlayback = player.subscribe(event => {
       if (event.type === 'runtime' || event.type === 'available') void this.refresh()
     })
+    const releaseDanmu = danmu.onStateChange(() => void this.refresh())
     ctx.console.addListener('bili-live-music/state', async () => this.get(), { authority: 0 })
     ctx.console.addListener('bili-live-music/search', async ({ keyword }) => {
       const normalized = keyword?.trim()
@@ -85,7 +95,10 @@ class QueueStateService extends DataService<QueueConsoleState> {
       )
       const songs = await requests.search(normalized, config.webuiSearchLimit)
       const searchId = randomUUID()
-      this.searches.set(searchId, { expiresAt: Date.now() + SEARCH_TTL_MS, songs })
+      const expiresAt = config.webuiSearchExpireMinutes <= 0
+        ? null
+        : Date.now() + config.webuiSearchExpireMinutes * 60_000
+      this.searches.set(searchId, { expiresAt, songs })
       logInfo(
         ctx,
         config,
@@ -96,9 +109,9 @@ class QueueStateService extends DataService<QueueConsoleState> {
     }, { authority: 0 })
     ctx.console.addListener('bili-live-music/add', async ({ searchId, index }) => {
       const search = this.searches.get(searchId)
-      if (!search || search.expiresAt < Date.now()) {
+      if (!search || (search.expiresAt !== null && search.expiresAt < Date.now())) {
         this.searches.delete(searchId)
-        throw new Error('搜索结果已过期，请重新搜索')
+        throw new Error(formatSearchExpiredMessage(config.webuiSearchExpireMinutes))
       }
       const candidate = search.songs[index]
       if (!candidate) throw new Error('搜索结果序号无效')
@@ -158,10 +171,12 @@ class QueueStateService extends DataService<QueueConsoleState> {
     ctx.console.addListener('bili-live-music/vlc-detect', async () => player.detect(), { authority: 3 })
     ctx.console.addListener('bili-live-music/vlc-devices', async () => player.listAudioDevices(), { authority: 3 })
     ctx.console.addListener('bili-live-music/vlc-restart', async () => player.restart(), { authority: 3 })
+    ctx.console.addListener('bili-live-music/danmu-reconnect', async () => danmu.reconnect(), { authority: 3 })
 
     ctx.on('dispose', () => {
       releaseState()
       releasePlayback()
+      releaseDanmu()
       this.searches.clear()
     })
   }
@@ -171,8 +186,15 @@ class QueueStateService extends DataService<QueueConsoleState> {
       ...this.deps.queue.getState(),
       provider: this.deps.requests.describeProvider(),
       fontUrl: this.deps.fontUrl,
+      searchExpireMinutes: this.deps.config.webuiSearchExpireMinutes,
       playerReady: this.deps.queue.isPlayerReady(),
       playback: this.deps.player.getRuntimeState(),
+      danmu: this.deps.danmu.getState(),
+      danmuHistory: this.deps.danmu.getSnapshot().history,
+      features: {
+        musicManagementPage: this.deps.config.enableMusicManagementPage,
+        danmuStateMachinePage: this.deps.config.enableDanmuStateMachinePage,
+      },
     }
   }
 }
@@ -181,19 +203,25 @@ export function registerConsoleApi(
   ctx: Context,
   queue: QueueManager,
   player: PlaybackBackend,
+  danmu: BilibiliDanmuManager,
   requests: SongRequestService,
   config: Config,
   fontUrl: string,
   entry: { dev: string; prod: string },
 ) {
-  ctx.plugin(QueueStateService, { queue, player, requests, config, fontUrl, entry })
+  ctx.plugin(QueueStateService, { queue, player, danmu, requests, config, fontUrl, entry })
 }
 
-function pruneSearches(searches: Map<string, { expiresAt: number }>): void {
+function pruneSearches(searches: Map<string, { expiresAt: number | null }>): void {
   const now = Date.now()
   for (const [id, search] of searches) {
-    if (search.expiresAt < now) searches.delete(id)
+    if (search.expiresAt !== null && search.expiresAt < now) searches.delete(id)
   }
+}
+
+function formatSearchExpiredMessage(expireMinutes: number): string {
+  if (expireMinutes <= 0) return '搜索结果不存在，可能已因插件重启或热重载失效，请重新搜索'
+  return `搜索结果超过 ${expireMinutes} 分钟，已过期，请重新搜索`
 }
 
 function shortId(value: string): string {

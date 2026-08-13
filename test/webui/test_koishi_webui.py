@@ -22,10 +22,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-loaded-covers", action="store_true", help="Require every visible search-result cover to finish loading.")
     parser.add_argument("--add-result-index", type=int, help="Add the 1-based search result index to the queue.")
     parser.add_argument("--test-volume", type=int, help="Temporarily set 0-100 playback volume, reload to verify persistence, then restore it.")
+    parser.add_argument("--test-danmu-reconnect", action="store_true", help="Trigger one real danmu reconnect and require visible result feedback.")
+    parser.add_argument("--expect-disabled", action="store_true", help="Expect the management-page disabled placeholder.")
     parser.add_argument("--interactive-login", action="store_true", help="Wait for manual sign-in before testing target-url.")
     parser.add_argument("--headless", action="store_true", help="Run without a visible browser window.")
     parser.add_argument("--pause", action="store_true", help="Keep the page open until Enter is pressed.")
     parser.add_argument("--timeout-ms", type=int, default=30_000, help="Navigation and selector timeout in milliseconds.")
+    parser.add_argument("--viewport-width", type=int, default=1440)
+    parser.add_argument("--viewport-height", type=int, default=900)
     return parser.parse_args()
 
 
@@ -60,7 +64,7 @@ def main() -> int:
             executable_path=str(browser_path),
             headless=args.headless,
             args=browser_args,
-            viewport={"width": 1440, "height": 900},
+            viewport={"width": args.viewport_width, "height": args.viewport_height},
         )
         try:
             page = context.pages[0] if context.pages else context.new_page()
@@ -102,10 +106,39 @@ def main() -> int:
                     f"Current URL: {page.url}\nFailure screenshot: {failure_path}\n{details}"
                 ) from error
 
+            if args.expect_disabled:
+                disabled = page.locator(".disabled-page")
+                disabled.wait_for(state="visible", timeout=args.timeout_ms)
+                if "enableMusicManagementPage" not in disabled.inner_text():
+                    raise RuntimeError("disabled page does not name enableMusicManagementPage")
+                state_link = page.get_by_role("link", name="弹幕状态机 ›", exact=True)
+                state_link.wait_for(state="visible")
+                if not state_link.get_attribute("href").endswith("/bili-live-music/danmu-state-machine"):
+                    raise RuntimeError("disabled management page lost its state-machine link")
+                page.screenshot(path=str(screenshot_path), full_page=True)
+                print("PASS: disabled management page names its config switch and preserves navigation")
+                print(f"Screenshot: {screenshot_path}")
+                return 0
+
             volume = page.locator("#playback-volume")
             volume.wait_for(state="visible", timeout=args.timeout_ms)
             if volume.get_attribute("min") != "0" or volume.get_attribute("max") != "100":
                 raise RuntimeError("playback volume slider must use the 0-100 range")
+            page.locator(".danmu-section").wait_for(state="visible", timeout=args.timeout_ms)
+            page.get_by_role("link", name="弹幕状态机 ›", exact=True).wait_for(state="visible")
+            reconnect_button = page.get_by_role("button", name="立即重连", exact=False)
+            reconnect_button.wait_for(state="visible", timeout=args.timeout_ms)
+            reconnect_result = ""
+            if args.test_danmu_reconnect:
+                reconnect_button.click()
+                page.wait_for_function(
+                    """() => {
+                        const button = [...document.querySelectorAll('button')].find(item => item.textContent.includes('立即重连'))
+                        return button && !button.disabled && Boolean(document.querySelector('.notice'))
+                    }""",
+                    timeout=max(args.timeout_ms, 15_000),
+                )
+                reconnect_result = page.locator(".notice").inner_text()
             initial_volume = int(volume.input_value())
             if args.test_volume is not None:
                 volume.fill(str(args.test_volume))
@@ -198,6 +231,9 @@ def main() -> int:
             print(f"PASS: Console DataService provider={provider}")
             print(f"PASS: layout bounds={bounds}")
             print(f"PASS: playback volume={volume.input_value()}%")
+            print(f"PASS: danmu status={page.locator('.danmu-title').inner_text()}")
+            if args.test_danmu_reconnect:
+                print(f"PASS: danmu reconnect feedback={reconnect_result}")
             if args.test_volume is not None:
                 print(f"PASS: runtime volume RPC accepted {args.test_volume}% and restored {initial_volume}%")
             if args.search_keyword:

@@ -1,8 +1,8 @@
 import type { Context } from 'koishi'
 import type { AxiosInstance } from 'axios'
 import type { Config } from '../config'
-import type { LiveUser } from '../music/types'
 import { prepareDanmuIdentity } from './identity'
+import type { DanmuConnectionAdapter, DanmuConnectionCallbacks, DanmuIdentityMode, DanmuMessage } from './types'
 
 declare module 'koishi' {
   interface Context {
@@ -20,11 +20,6 @@ interface BliveMessageListener {
   startListen(roomId: number, handler: Record<string, unknown>, options?: Record<string, unknown>): {
     close(): void
   }
-}
-
-export interface DanmuMessage {
-  content: string
-  user: LiveUser
 }
 
 const DANMU_DEDUPE_WINDOW = 3_000
@@ -49,9 +44,11 @@ export class DanmuDeduplicator {
   }
 }
 
-export class BilibiliDanmuClient {
+export class BilibiliDanmuConnection implements DanmuConnectionAdapter {
   private listener?: { close(): void }
-  private stopping = false
+  private blive?: BliveMessageListener
+  private identity?: Awaited<ReturnType<typeof prepareDanmuIdentity>>
+  private operation = 0
   private deduplicator = new DanmuDeduplicator()
 
   constructor(
@@ -61,100 +58,79 @@ export class BilibiliDanmuClient {
     private onDanmu: (message: DanmuMessage) => void | Promise<void>,
   ) {}
 
-  async start(): Promise<void> {
-    const logger = this.ctx.logger('bili-live-music')
-    this.stopping = false
-    this.deduplicator.clear()
-    if (!this.config.enabled) return
-    if (!this.config.roomId) {
-      logger.warn('未配置 B 站直播间号，跳过弹幕监听')
-      return
-    }
-    if (!this.ctx.node?.import) {
-      logger.warn('未检测到 w-node 服务，无法加载 blive-message-listener')
-      return
-    }
-
+  async connect(callbacks: DanmuConnectionCallbacks): Promise<DanmuIdentityMode> {
+    this.stop()
+    const operation = this.operation
     const roomId = Number.parseInt(this.config.roomId, 10)
-    if (!Number.isFinite(roomId) || roomId <= 0) {
-      logger.warn(`直播间号非法: ${this.config.roomId}`)
-      return
-    }
+    const blive = this.blive ?? await this.loadListener()
+    this.assertCurrent(operation)
+    this.blive = blive
+    const identity = this.identity ?? await prepareDanmuIdentity(
+      this.http,
+      this.config.cookie,
+      this.config.uid,
+      this.ctx.logger('bili-live-music'),
+    )
+    this.assertCurrent(operation)
+    this.identity = identity
 
+    const handler = {
+      onOpen: () => callbacks.onOpen(),
+      onStartListen: () => callbacks.onConnected(),
+      onClose: () => callbacks.onClose(),
+      onError: (error: unknown) => callbacks.onError(error),
+      onIncomeDanmu: ({ body }: any) => this.handleDanmu(body),
+    }
+    this.listener = blive.startListen(roomId, handler, {
+      ws: { headers: identity.headers, uid: identity.uid },
+    })
+    return identity.anonymous ? 'anonymous' : 'authenticated'
+  }
+
+  stop(): void {
+    this.operation++
+    const listener = this.listener
+    this.listener = undefined
+    listener?.close()
+  }
+
+  dispose(): void {
+    this.stop()
+    this.deduplicator.clear()
+    this.blive = undefined
+    this.identity = undefined
+  }
+
+  private async loadListener(): Promise<BliveMessageListener> {
+    if (!this.ctx.node?.import) throw new Error('未检测到 w-node 服务')
     const blive = await this.ctx.node.import<BliveMessageListener>('blive-message-listener', {
       version: this.config.listenerVersion,
       allowInstall: true,
     })
-    if (!blive?.startListen) {
-      logger.warn('blive-message-listener 未提供 startListen')
-      return
-    }
-
-    const identity = await prepareDanmuIdentity(this.http, this.config.cookie, this.config.uid, logger)
-    logger.info(
-      identity.anonymous
-        ? `B 站匿名身份已就绪${identity.generatedBuvid ? '，已自动初始化 buvid3' : ''}`
-        : `B 站登录身份已就绪，uid=${identity.uid}`,
-    )
-
-    let authenticated = false
-    let preAuthCloseCount = 0
-
-    const handler = {
-      onOpen: () => logger.info(`B 站直播间 ${roomId} 弹幕连接已打开`),
-      onStartListen: () => {
-        authenticated = true
-        preAuthCloseCount = 0
-        logger.info(`B 站直播间 ${roomId} 弹幕认证成功，已开始监听`)
-      },
-      onClose: () => {
-        if (this.stopping) return
-        if (authenticated) {
-          authenticated = false
-          logger.warn(`B 站直播间 ${roomId} 弹幕连接已关闭，等待自动重连`)
-          return
-        }
-        preAuthCloseCount++
-        logger.warn(`B 站直播间 ${roomId} 在认证完成前断开（${preAuthCloseCount}/3）`)
-        if (preAuthCloseCount < 3) return
-        logger.error(`B 站直播间 ${roomId} 连续 3 次认证失败，已停止重连；请检查 Cookie、UID 或 B 站风控状态`)
-        this.listener?.close()
-        this.listener = undefined
-      },
-      onError: (error: unknown) => logger.warn(`B 站弹幕监听错误: ${error instanceof Error ? error.message : String(error)}`),
-      onIncomeDanmu: ({ body }: any) => {
-        const content = body?.content
-        const user = body?.user
-        if (!content || !user) return
-        const messageId = body.idStr ?? body.id ?? body.dmid ?? body.dm_id
-        const dedupeKey = messageId
-          ? `id:${messageId}`
-          : `content:${String(user.uid ?? '')}:${String(user.uname ?? user.name ?? '')}:${content}`
-        if (!this.deduplicator.accept(dedupeKey)) {
-          logger.debug(`忽略重复弹幕事件: ${String(user.uname ?? user.name ?? user.uid ?? 'unknown')} -> ${content}`)
-          return
-        }
-        void this.onDanmu({
-          content,
-          user: {
-            uid: String(user.uid ?? ''),
-            name: String(user.uname ?? user.name ?? user.uid ?? 'unknown'),
-            origin: 'bilibili',
-          },
-        })
-      },
-    }
-
-    this.listener = blive.startListen(roomId, handler, {
-      ws: { headers: identity.headers, uid: identity.uid },
-    })
-    logger.info(`B 站直播间 ${roomId} 弹幕监听已启动，listener=${this.config.listenerVersion}`)
+    if (!blive?.startListen) throw new Error('blive-message-listener 未提供 startListen')
+    return blive
   }
 
-  stop(): void {
-    this.stopping = true
-    this.deduplicator.clear()
-    this.listener?.close()
-    this.listener = undefined
+  private assertCurrent(operation: number): void {
+    if (operation !== this.operation) throw new Error('弹幕连接已取消')
+  }
+
+  private handleDanmu(body: any): void {
+    const content = body?.content
+    const user = body?.user
+    if (!content || !user) return
+    const messageId = body.idStr ?? body.id ?? body.dmid ?? body.dm_id
+    const dedupeKey = messageId
+      ? `id:${messageId}`
+      : `content:${String(user.uid ?? '')}:${String(user.uname ?? user.name ?? '')}:${content}`
+    if (!this.deduplicator.accept(dedupeKey)) return
+    void this.onDanmu({
+      content,
+      user: {
+        uid: String(user.uid ?? ''),
+        name: String(user.uname ?? user.name ?? user.uid ?? 'unknown'),
+        origin: 'bilibili',
+      },
+    })
   }
 }

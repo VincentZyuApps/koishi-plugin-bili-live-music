@@ -45,7 +45,7 @@ http://xwl.vincentzyu233.cn:51217
 - `netease`：使用网易云搜索，可选 `api.injahow.cn`、`api.qijieya.cn`、`meting.jmstrand.cn` 或 `metingapi.nanorocky.top` 生成播放直链。
 - `luoyue`：支持自定义 API URL，并可多选网易云、QQ 音乐和酷狗。WebUI 多平台搜索会并行请求并交替合并结果。
 
-WebUI 默认返回最多 20 条候选结果。搜索阶段只获取元数据，点击加入队列时才解析播放 URL。
+WebUI 默认返回最多 20 条候选结果。搜索阶段只获取元数据，点击加入队列时才解析播放 URL。`webuiSearchExpireMinutes` 默认是 `30`，表示搜索结果在内存中保留 30 分钟；设置为小于或等于 `0` 时，本次插件运行期间永不过期。插件重启或 HMR 热重载始终会清空搜索结果。
 
 `verboseConsoleLog` 默认关闭。开启后，控制台会在普通操作摘要之外输出 WebUI 搜索标识、候选歌曲 ID、音乐源请求参数、响应摘要和耗时；带签名的完整播放直链不会写入日志。
 
@@ -141,6 +141,12 @@ Fastify 仅提供 HTTP。需要公网 HTTPS 时，请使用 Nginx、Caddy 等反
 
 只有受限直播间、需要完整弹幕用户名，或 B 站限制匿名访问时，才需要填写登录 Cookie。登录 Cookie 建议包含 `SESSDATA`、`DedeUserID` 和 `buvid3`，配置的 `uid` 必须与 `DedeUserID` 一致。
 
+### 弹幕连接与自动重连
+
+弹幕监听使用 `disabled`、`starting`、`connected`、`waiting`、`reconnecting` 和 `stopped` 六个状态。每次连接最多等待 10 秒完成认证；失败后按照 `1、2、4、8、16、32` 秒指数退避，达到 32 秒后继续每 32 秒无限重试。因此先启动 Koishi、稍后再开启直播时，不需要重载插件。
+
+连接成功后失败次数归零，下一次断线重新从 1 秒开始。插件卸载或 HMR 时会关闭监听器并清理连接超时与重试计时器，旧连接的迟到回调不会影响新实例。
+
 ## Bot 点歌
 
 在 `botRequestContexts` 中勾选群聊或私聊后，可使用：
@@ -160,6 +166,9 @@ Koishi 控制台会新增「直播点歌」页面，支持：
 - 置顶、上移、下移或删除等待歌曲。
 - 跳过当前歌曲或清空等待队列。
 - 查看 Browser/VLC 运行状态，并检测 VLC、查询音频设备或重启专属 VLC 进程。
+- 查看 B 站弹幕连接状态、失败次数、重试倒计时并手动重连。
+
+Console 始终注册「直播点歌」与「弹幕状态机」两个页面，页面可以相互跳转。`enableMusicManagementPage` 默认开启，控制直播点歌管理内容；`enableDanmuStateMachinePage` 默认关闭，控制六节点状态图和最近 25 条内存转换记录。关闭页面内容后路由仍然保留，并显示需要开启的配置项。
 
 WebUI 手动加歌会绕过用户冷却和单用户上限，但仍遵守单曲时长和总队列上限。队列仅保存在内存中，重启插件后会清空。
 
@@ -172,4 +181,8 @@ bili-live-music.status   # 查看当前歌曲和队列
 bili-live-music.skip     # 跳过当前歌曲，需要 3 级权限
 bili-live-music.clear    # 清空等待队列，需要 3 级权限
 bili-live-music.overlay  # 查看含访问令牌的 OBS 地址，需要 3 级权限
+bili-live-music.danmu.status     # 查看弹幕监听状态，需要 3 级权限
+bili-live-music.danmu.reconnect  # 断开并重新连接弹幕监听，需要 3 级权限
 ```
+
+手动重连最多等待 10 秒。认证成功时返回 `connected` 和实际耗时；明确失败或超时时返回 `waiting`、连续失败次数和下一次自动重试时间。

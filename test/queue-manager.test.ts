@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import type { Config } from '../src/config'
+import { normalizeConfig, type Config } from '../src/config'
 import type { QueueItem, Song } from '../src/music/types'
 import type { PlaybackBackend, PlaybackEvent, PlaybackRuntimeState } from '../src/player/types'
 import { QueueManager } from '../src/queue/manager'
@@ -60,6 +60,10 @@ const config = {
 } as Config
 
 async function main() {
+  assert.equal(normalizeConfig({}).webuiSearchExpireMinutes, 30)
+  assert.equal(normalizeConfig({ webuiSearchExpireMinutes: 0 }).webuiSearchExpireMinutes, 0)
+  assert.equal(normalizeConfig({ webuiSearchExpireMinutes: -1 }).webuiSearchExpireMinutes, -1)
+
   const requester = { uid: 'tester', name: 'Tester', origin: 'webui' as const }
   const song = (title: string): Song => ({ title, artist: 'Artist', duration: 180_000, url: `https://example.com/${title}.mp3`, source: 'netease' })
   const player = new TestPlayer()

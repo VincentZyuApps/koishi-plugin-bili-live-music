@@ -1,9 +1,10 @@
 # WebUI 与 OBS Overlay 浏览器测试
 
-这里的两个脚本分别测试两套独立页面：
+这里的三个脚本分别测试 Koishi Console 与 OBS Overlay 页面：
 
 - `test_koishi_webui.py`：测试 Koishi Console 中的 `/bili-live-music` 管理页面，使用 Koishi 自己的登录会话。
 - `test_obs_overlay.py`：测试 Fastify 提供的 OBS Overlay 页面，使用 `obsAccessToken` 鉴权，不依赖 Koishi Console 登录。
+- `test_danmu_state_machine.py`：测试弹幕状态机页面、六节点图或默认关闭提示，以及返回直播点歌页面的跳转。
 
 脚本不会读取、导出或打印浏览器 Cookie。浏览器路径、目标 URL、用户数据目录和 OBS Token 都必须通过命令行显式传入。
 
@@ -96,3 +97,4 @@ python .\webui\test_obs_overlay.py `
 - `--require-loaded-covers`：与搜索一起使用，要求所有可见搜索结果封面的 `naturalWidth` 大于 0。
 - `--add-result-index`：将指定的搜索结果加入队列，序号从 `1` 开始，必须与 `--search-keyword` 一起使用。
 - `--test-volume`：临时调整 0–100% 播放音量，刷新验证运行态仍保留后恢复原值。
+- `--test-danmu-reconnect`：执行一次真实弹幕重连，并验证按钮等待状态与结果提示。

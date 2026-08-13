@@ -67,6 +67,11 @@ export interface Config {
   fontPath: string // 🔤 霞鹜文楷字体路径
   overlayCommandConsoleOnly: boolean // 🖥️ OBS 地址指令是否仅输出到控制台
 
+  // ===== 🧭 Koishi Console 页面 =====
+  enableMusicManagementPage: boolean // 🎵 是否启用直播点歌管理页面内容
+  enableDanmuStateMachinePage: boolean // 📡 是否启用弹幕状态机页面内容
+  webuiSearchExpireMinutes: number // ⏳ WebUI 搜索结果有效期，单位分钟；小于等于 0 时永不过期
+
   // ===== 🐛 调试设置 =====
   verboseConsoleLog: boolean // 🐛 是否在控制台输出调试信息
 }
@@ -121,6 +126,10 @@ export function normalizeConfig(input: Partial<Config>): Config {
   config.overlayTemplatePath ??= getDefaultOverlayTemplateDisplayPath()
   config.fontPath ??= getDefaultFontDisplayPath()
   config.overlayCommandConsoleOnly ??= true
+
+  config.enableMusicManagementPage ??= true
+  config.enableDanmuStateMachinePage ??= false
+  if (!Number.isFinite(config.webuiSearchExpireMinutes)) config.webuiSearchExpireMinutes = 30
 
   config.verboseConsoleLog ??= false
   return config
@@ -250,6 +259,19 @@ export const Config = Schema.intersect([
       .default(true)
       .description('🖥️ <code>bili-live-music.overlay</code> 是否仅在 Koishi Console 输出 OBS 地址<br><i>开启：完整地址仅输出到 Console，并向当前 Session 发送查看提示；关闭：完整地址同时输出到 Console 和 Session</i>'),
   }).description('🖥️ OBS 独立播放服务'),
+
+  // ===== 🧭 Koishi Console 页面 =====
+  Schema.object({
+    enableMusicManagementPage: Schema.boolean()
+      .default(true)
+      .description('🎵 是否启用直播点歌管理页面内容<br><i>关闭后页面路由仍保留，并显示配置提示</i>'),
+    enableDanmuStateMachinePage: Schema.boolean()
+      .default(false)
+      .description('📡 是否启用弹幕状态机页面内容<br><i>关闭后页面路由仍保留，并显示配置提示</i>'),
+    webuiSearchExpireMinutes: Schema.number()
+      .default(30)
+      .description('⏳ WebUI 搜索结果有效期（分钟）<br><i>默认 30 分钟；允许填写任意数字，设置为小于或等于 0 时在本次插件运行期间永不过期；插件重启或热重载仍会清空内存中的搜索结果</i>'),
+  }).description('🧭 Koishi Console 页面'),
 
   // ===== 🐛 调试设置 =====
   Schema.object({

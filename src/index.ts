@@ -3,7 +3,8 @@ import { Context } from 'koishi'
 import { ensureSharedAssets, resolveOverlayTemplatePath } from './assets'
 import { Config as PluginConfig, normalizeConfig } from './config'
 import type { Config } from './config'
-import { BilibiliDanmuClient } from './danmu/client'
+import { BilibiliDanmuManager } from './danmu/manager'
+import type { DanmuReconnectResult, DanmuRuntimeState } from './danmu/types'
 import { parseSongRequest } from './danmu/parser'
 import { createMusicProvider } from './music/provider'
 import { createHttpClient } from './http'
@@ -34,14 +35,14 @@ export async function apply(ctx: Context, inputConfig: Config) {
   let releaseObsServerLease: (() => void) | undefined
   let obsServer: Awaited<ReturnType<typeof startObsServer>> | undefined
   let obsServerStarting = false
-  let danmu: BilibiliDanmuClient | undefined
+  let danmu: BilibiliDanmuManager | undefined
 
   // Bind external Fastify/listener cleanup before the first await because HMR
   // can dispose this plugin context while asynchronous startup is still running,
   // This prevents an orphaned Fastify listener from retaining the OBS port.
   ctx.on('dispose', async () => {
     disposed = true
-    danmu?.stop()
+    danmu?.dispose()
     releaseState?.()
     releaseControls?.()
     queue?.dispose()
@@ -78,6 +79,19 @@ export async function apply(ctx: Context, inputConfig: Config) {
   const activeQueue = new QueueManager(config, activePlayer)
   queue = activeQueue
   const requests = new SongRequestService(provider, activeQueue)
+  const activeDanmu = new BilibiliDanmuManager(ctx, config, http, async (message) => {
+    const request = parseSongRequest(message.content, message.user, config.commandPrefix)
+    if (!request) return
+
+    logger.info(`收到点歌: ${request.user.name}(${request.user.uid}) -> ${request.keyword}`)
+    try {
+      const result = await requests.requestByKeyword(request.keyword, request.user)
+      logger.info(`已加入队列: ${result.item.song.title} - ${result.item.song.artist}`)
+    } catch (error) {
+      logger.warn(`点歌失败: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  })
+  danmu = activeDanmu
   releaseState = activeQueue.onStateChange(state => activeHub.publish(state))
   releaseControls = activeHub.onControl(control => {
     if (control === 'previous') void activeQueue.previous()
@@ -116,25 +130,12 @@ export async function apply(ctx: Context, inputConfig: Config) {
   await activePlayer.start()
   if (disposed) return
 
-  registerConsoleApi(ctx, activeQueue, activePlayer, requests, config, startedObsServer.fontUrl(), {
+  registerConsoleApi(ctx, activeQueue, activePlayer, activeDanmu, requests, config, startedObsServer.fontUrl(), {
     dev: path.resolve(__dirname, '../client/index.ts'),
     prod: path.resolve(__dirname, '../dist'),
   })
 
-  danmu = new BilibiliDanmuClient(ctx, config, http, async (message) => {
-    const request = parseSongRequest(message.content, message.user, config.commandPrefix)
-    if (!request) return
-
-    logger.info(`收到点歌: ${request.user.name}(${request.user.uid}) -> ${request.keyword}`)
-    try {
-      const result = await requests.requestByKeyword(request.keyword, request.user)
-      logger.info(`已加入队列: ${result.item.song.title} - ${result.item.song.artist}`)
-    } catch (error) {
-      logger.warn(`点歌失败: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  })
-
-  void danmu.start().catch((error) => {
+  void activeDanmu.start().catch((error) => {
     logger.warn(`B 站弹幕监听启动失败: ${error instanceof Error ? error.message : String(error)}`)
   })
 
@@ -171,6 +172,12 @@ export async function apply(ctx: Context, inputConfig: Config) {
     const backend = activePlayer.kind === 'vlc' ? 'VLC' : 'OBS 浏览器'
     return `${current}\n队列剩余：${state.queue.length} 首\n${backend} 播放器：${activePlayer.isReady() ? '已就绪' : '未就绪'}`
   })
+  ctx.command('bili-live-music.danmu.status', '查看 B 站弹幕监听状态', { authority: 3 }).action(() => {
+    return formatDanmuStatus(activeDanmu.getState())
+  })
+  ctx.command('bili-live-music.danmu.reconnect', '重新连接 B 站弹幕监听', { authority: 3 }).action(async () => {
+    return formatDanmuReconnect(await activeDanmu.reconnect())
+  })
   ctx.command('bili-live-music.skip', '跳过当前歌曲', { authority: 3 }).action(async () => {
     await activeQueue.skip()
     return '已跳过当前歌曲'
@@ -190,6 +197,40 @@ export async function apply(ctx: Context, inputConfig: Config) {
     if (config.overlayCommandConsoleOnly) return '🖥️ 请前往 Koishi Console 查看 OBS 浏览器源地址。'
     return message
   })
+}
+
+function formatDanmuStatus(state: DanmuRuntimeState): string {
+  const lines = [
+    '📡 B 站弹幕监听状态',
+    `房间号：${state.roomId || '未配置'}`,
+    `状态：${state.state}`,
+    `身份：${formatDanmuIdentity(state.identity)}`,
+    `连接尝试：${state.attempt} 次`,
+    `连续失败：${state.failureCount} 次`,
+  ]
+  if (state.connectedAt) lines.push(`连接时间：${new Date(state.connectedAt).toLocaleString('zh-CN')}`)
+  if (state.nextRetryAt) lines.push(`下次重试：${Math.max(0, Math.ceil((state.nextRetryAt - Date.now()) / 1_000))} 秒后`)
+  if (state.lastError) lines.push(`最后错误：${state.lastError}`)
+  return lines.join('\n')
+}
+
+function formatDanmuReconnect(result: DanmuReconnectResult): string {
+  const state = result.state
+  const title = result.ok ? '✅ B 站弹幕重连成功' : state.state === 'waiting' ? '⚠️ B 站弹幕重连失败' : '⛔ B 站弹幕无法重连'
+  const lines = [
+    title,
+    `房间号：${state.roomId || '未配置'}`,
+    `状态：${state.state}`,
+    `耗时：${(result.elapsed / 1_000).toFixed(1)} 秒`,
+  ]
+  if (state.failureCount) lines.push(`连续失败：${state.failureCount} 次`)
+  if (state.nextRetryAt) lines.push(`下次重试：${Math.max(0, Math.ceil((state.nextRetryAt - Date.now()) / 1_000))} 秒后`)
+  if (state.lastError) lines.push(`最后错误：${state.lastError}`)
+  return lines.join('\n')
+}
+
+function formatDanmuIdentity(identity: DanmuRuntimeState['identity']): string {
+  return identity === 'authenticated' ? '登录身份' : identity === 'anonymous' ? '匿名身份' : '尚未确定'
 }
 
 function formatSubmission(result: Awaited<ReturnType<SongRequestService['requestByKeyword']>>): string {

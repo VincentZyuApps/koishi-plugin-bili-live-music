@@ -8,13 +8,45 @@
         <h1>直播点歌</h1>
         <p class="provider">{{ state.provider || '正在连接音乐服务' }}</p>
       </div>
-      <div class="status" :class="state.phase === 'loading' ? 'loading' : state.playing ? 'playing' : state.paused ? 'paused' : !state.playerReady ? 'disconnected' : 'idle'">
-        <span class="status-dot"></span>
-        {{ state.phase === 'loading' ? '正在加载' : state.playing ? '播放中' : state.paused ? '已暂停' : !state.playerReady ? '播放器未就绪' : '空闲' }}
+      <div class="page-header-actions">
+        <a class="nav-button" href="/bili-live-music/danmu-state-machine">弹幕状态机 ›</a>
+        <div v-if="musicPageEnabled" class="status" :class="state.phase === 'loading' ? 'loading' : state.playing ? 'playing' : state.paused ? 'paused' : !state.playerReady ? 'disconnected' : 'idle'">
+          <span class="status-dot"></span>
+          {{ state.phase === 'loading' ? '正在加载' : state.playing ? '播放中' : state.paused ? '已暂停' : !state.playerReady ? '播放器未就绪' : '空闲' }}
+        </div>
       </div>
     </header>
 
+    <PageDisabled
+      v-if="!musicPageEnabled"
+      title="直播点歌管理页面已关闭"
+      config-key="enableMusicManagementPage"
+      target-label="前往弹幕状态机"
+      target-path="/bili-live-music/danmu-state-machine"
+    />
+
+    <template v-else>
     <p v-if="notice" class="notice" :class="noticeType">{{ notice }}</p>
+
+    <section class="section danmu-section">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">B 站弹幕监听</span>
+          <h2 class="danmu-title"><span class="danmu-dot" :class="danmu.state"></span>{{ stateLabels[danmu.state] }}</h2>
+          <p class="backend-detail">房间 {{ danmu.roomId || '未配置' }} · {{ identityLabel(danmu.identity) }}</p>
+        </div>
+        <button class="command-button" :disabled="danmuReconnecting" @click="reconnectDanmu">
+          {{ danmuReconnecting ? '正在重连' : '↻ 立即重连' }}
+        </button>
+      </div>
+      <dl class="danmu-meta">
+        <div><dt>连接尝试</dt><dd>{{ danmu.attempt }} 次</dd></div>
+        <div><dt>连续失败</dt><dd>{{ danmu.failureCount }} 次</dd></div>
+        <div><dt>连接时间</dt><dd>{{ danmu.connectedAt ? formatDateTime(danmu.connectedAt) : '—' }}</dd></div>
+        <div><dt>下次重试</dt><dd>{{ danmuRetryText }}</dd></div>
+      </dl>
+      <p v-if="danmu.lastError" class="backend-error">{{ danmu.lastError }}</p>
+    </section>
 
     <section class="section backend-section">
       <div class="section-heading">
@@ -128,6 +160,7 @@
           {{ searching ? '搜索中' : '搜索' }}
         </button>
       </form>
+      <p class="search-retention">{{ searchRetentionText }}</p>
 
       <div v-if="songs.length" class="table-wrap search-results">
         <table>
@@ -231,14 +264,17 @@
       </div>
       <div v-else class="empty-state">暂无等待歌曲</div>
     </section>
+    </template>
       </main>
     </el-scrollbar>
   </k-layout>
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { send, store } from '@koishijs/client'
+import PageDisabled from './components/page-disabled.vue'
+import { fallbackDanmuState, identityLabel, stateLabels, type ConsoleFeatures, type DanmuReconnectResult, type DanmuRuntimeState, type DanmuStateTransition } from './types'
 
 type MusicSource = 'netease' | 'tencent' | 'kugou'
 type RequestOrigin = 'bilibili' | 'bot-group' | 'bot-private' | 'webui'
@@ -278,9 +314,13 @@ interface QueueState {
   position: number
   provider: string
   fontUrl: string
+  searchExpireMinutes: number
   playerReady: boolean
   backendError: string | null
   playback: PlaybackRuntime
+  danmu: DanmuRuntimeState
+  danmuHistory: DanmuStateTransition[]
+  features: ConsoleFeatures
 }
 
 interface LastFinishedTrack {
@@ -318,11 +358,21 @@ const fallbackState: QueueState = {
   position: 0,
   provider: '',
   fontUrl: '',
+  searchExpireMinutes: 30,
   playerReady: false,
   backendError: null,
   playback: { kind: 'browser', status: 'stopped', ready: false, detail: '正在连接播放器', error: null, volume: 100 },
+  danmu: fallbackDanmuState,
+  danmuHistory: [],
+  features: { musicManagementPage: true, danmuStateMachinePage: false },
 }
 const state = computed(() => (store['bili-live-music'] as QueueState | undefined) || fallbackState)
+const musicPageEnabled = computed(() => state.value.features?.musicManagementPage ?? true)
+const searchExpireMinutes = computed(() => state.value.searchExpireMinutes ?? 30)
+const searchRetentionText = computed(() => searchExpireMinutes.value <= 0
+  ? '搜索结果在本次运行期间永不过期；插件重启或热重载后需要重新搜索'
+  : `搜索结果保留 ${searchExpireMinutes.value} 分钟，超过后需要重新搜索`)
+const danmu = computed(() => state.value.danmu || fallbackDanmuState)
 const displayedItem = computed(() => state.value.current || state.value.lastFinished?.item || null)
 const displayedPosition = computed(() => state.value.current ? state.value.position : state.value.lastFinished?.position || 0)
 const playbackButtonLabel = computed(() => state.value.phase === 'loading' ? '正在加载' : !state.value.current ? '开始播放' : state.value.paused ? '继续播放' : '暂停')
@@ -336,6 +386,13 @@ const noticeType = ref<'success' | 'error'>('success')
 const vlcDevices = ref<AudioDevice[]>([])
 const volumeDraft = ref(100)
 const busy = reactive(new Set<string>())
+const now = ref(Date.now())
+const clock = window.setInterval(() => { now.value = Date.now() }, 500)
+onBeforeUnmount(() => window.clearInterval(clock))
+const danmuReconnecting = computed(() => busy.has('danmu-reconnect') || danmu.value.state === 'starting' || danmu.value.state === 'reconnecting')
+const danmuRetryText = computed(() => danmu.value.nextRetryAt
+  ? `${Math.max(0, Math.ceil((danmu.value.nextRetryAt - now.value) / 1_000))} 秒后`
+  : '—')
 let noticeTimer: number | undefined
 let loadedFontUrl = ''
 let volumeTimer: number | undefined
@@ -403,6 +460,10 @@ function formatTime(timestamp: number) {
   return new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
+function formatDateTime(timestamp: number) {
+  return new Date(timestamp).toLocaleString('zh-CN', { hour12: false })
+}
+
 function showNotice(message: string, type: 'success' | 'error' = 'success') {
   notice.value = message
   noticeType.value = type
@@ -426,6 +487,25 @@ async function applyVolume() {
     volumeDraft.value = await rpc('bili-live-music/set-volume', { volume: volumeDraft.value })
   } catch (error) {
     showNotice(`音量调整失败：${messageOf(error)}`, 'error')
+  }
+}
+
+async function reconnectDanmu() {
+  if (danmuReconnecting.value) return
+  busy.add('danmu-reconnect')
+  try {
+    const result = await rpc('bili-live-music/danmu-reconnect') as DanmuReconnectResult
+    if (result.ok) {
+      showNotice(`弹幕重连成功，耗时 ${(result.elapsed / 1_000).toFixed(1)} 秒`)
+    } else if (result.state.nextRetryAt) {
+      showNotice(`弹幕重连失败，将在 ${Math.max(0, Math.ceil((result.state.nextRetryAt - Date.now()) / 1_000))} 秒后重试`, 'error')
+    } else {
+      showNotice(result.state.lastError || '当前配置无法重连', 'error')
+    }
+  } catch (error) {
+    showNotice(`弹幕重连失败：${messageOf(error)}`, 'error')
+  } finally {
+    busy.delete('danmu-reconnect')
   }
 }
 
@@ -585,7 +665,8 @@ async function copyDeviceId(id: string) {
 
 function messageOf(error: unknown) {
   const message = error instanceof Error ? error.message : String(error)
-  return message.replace(/^Error:\s*/, '').split(/\r?\n/, 1)[0]
+  const normalized = message.replace(/^Error:\s*/, '').split(/\r?\n/, 1)[0]
+  return /unauthorized/i.test(normalized) ? '权限不足，需要 3 级权限' : normalized
 }
 </script>
 
@@ -626,6 +707,9 @@ function messageOf(error: unknown) {
   background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
+.page-header-actions { display: flex; align-items: center; gap: 16px; }
+.nav-button { display: inline-flex; height: 34px; padding: 0 11px; align-items: center; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--surface); cursor: pointer; font: inherit; text-decoration: none; }
+.nav-button:hover { border-color: var(--accent); color: var(--accent-strong); }
 
 h1, h2, p { margin: 0; }
 h1 { font-size: 24px; line-height: 1.25; }
@@ -672,6 +756,14 @@ h2 { margin-top: 4px; font-size: 20px; line-height: 1.3; }
 .count { color: var(--muted); font-size: 13px; white-space: nowrap; }
 
 .backend-detail { margin-top: 6px; color: var(--muted); font-size: 13px; }
+.danmu-title { display: flex; align-items: center; gap: 9px; }
+.danmu-dot { width: 9px; height: 9px; border-radius: 50%; background: #8a929d; }
+.danmu-dot.connected { background: var(--success); box-shadow: 0 0 0 4px rgba(22, 131, 91, .12); }
+.danmu-dot.starting, .danmu-dot.reconnecting { background: #d18a16; animation: status-pulse 1s ease-in-out infinite; }
+.danmu-dot.waiting { background: #d18a16; }
+.danmu-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 18px 0 0; }
+.danmu-meta dt { color: var(--muted); font-size: 12px; }
+.danmu-meta dd { margin: 4px 0 0; overflow-wrap: anywhere; font-size: 13px; }
 .backend-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .backend-error { margin-top: 14px; padding: 10px 12px; border-left: 3px solid var(--danger); color: var(--danger); background: rgba(196, 59, 70, .08); }
 .volume-control { display: grid; width: min(100%, 520px); grid-template-columns: auto minmax(140px, 1fr) 48px; align-items: center; gap: 12px; margin-top: 18px; }
@@ -723,6 +815,7 @@ h2 { margin-top: 4px; font-size: 20px; line-height: 1.3; }
   outline: none;
 }
 .search-bar input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(232, 77, 135, .12); }
+.search-retention { margin-top: 8px; color: var(--muted); font-size: 12px; }
 
 button { font: inherit; letter-spacing: 0; }
 .command-button {
@@ -791,12 +884,14 @@ tbody tr:last-child td { border-bottom: 0; }
 @media (max-width: 720px) {
   .page-header, .section { padding: 18px 14px; }
   .page-header { align-items: flex-start; }
+  .page-header-actions { align-items: flex-end; flex-direction: column-reverse; }
   h1 { font-size: 21px; }
   h2 { font-size: 18px; }
   .section-heading { align-items: flex-start; }
   .backend-section .section-heading { display: grid; }
   .backend-actions { justify-content: flex-start; }
   .backend-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .danmu-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .device-row { grid-template-columns: minmax(0, 1fr) 32px; }
   .device-row code { grid-column: 1 / -1; grid-row: 2; }
   .current-track { align-items: flex-start; }
