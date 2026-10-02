@@ -10,6 +10,14 @@
     "assets"
   ],
   "license": "MIT",
+  "homepage": "https://github.com/VincentZyuApps/koishi-plugin-bili-live-music",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VincentZyuApps/koishi-plugin-bili-live-music.git"
+  },
+  "bugs": {
+    "url": "https://github.com/VincentZyuApps/koishi-plugin-bili-live-music/issues"
+  },
   "keywords": [
     "chatbot",
     "koishi",
