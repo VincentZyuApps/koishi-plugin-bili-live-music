@@ -11,7 +11,9 @@
 <p>🐛 Bug 反馈 / 💡 建议 / 👨‍💻 插件交流，欢迎加群：<b>1085190201</b> 🎉</p>
 <p>💡 在群里直接艾特 @VincentZyu，回复更及时~ ✨</p>
 
-B站直播间点歌，支持弹幕、Bot 与 WebUI 队列管理，可通过 OBS 浏览器源或插件专属 VLC 进程播放音频。
+B 站直播间点歌插件，支持弹幕、Bot 与 WebUI 队列管理，可通过 OBS 浏览器源或插件专属 VLC 进程播放音频。
+
+---
 
 ## 📸 效果预览
 
@@ -21,185 +23,216 @@ B站直播间点歌，支持弹幕、Bot 与 WebUI 队列管理，可通过 OBS 
 ### Koishi 控制台 WebUI 点歌台管理面板
 ![koishi的扩展webui.管理员点歌台控制面板](./docs/images/preview/koishi的扩展webui.管理员点歌台控制面板.png)
 
-## 功能
+---
 
-- 监听指定 B 站直播间的弹幕，识别 `点歌 歌名`。
-- 通过落月 API 搜索网易云音乐、QQ 音乐或酷狗音乐。
-- 维护点歌队列，提供用户冷却、单用户上限、队列上限和歌曲时长限制。
-- 使用独立 Fastify 服务向 OBS 浏览器源提供播放页面和 WebSocket。
-- 使用 Axios 统一发起音乐与 B 站身份 API 请求，请求超时为 15 秒且不自动重试。
-- 提供 Browser 与 VLC 两种播放后端，默认保持 Browser，不改变升级后的现有行为。
-- Browser 模式区分主播放器与展示端，确保同一时间只有一个页面播放音频和推进队列。
-- VLC 模式由插件启动并管理专属隐藏进程，Overlay 继续显示歌曲、进度和队列。
+## 🚀 功能特性
 
-## 落月 API
+- 📡 **B 站直播间弹幕监听**：识别 `点歌 歌名`，内置 6 节点指数退避重连状态机，支持匿名免登录监听。
+- 🎵 **多音乐源与双后端**：支持网易云直链与落月 API（网易云、QQ 音乐、酷狗），支持多源并行搜索与交替合并。
+- 📋 **健全的点歌限制**：提供单用户冷却（CD）、单用户排队上限、队列总上限以及单曲最大时长保护。
+- 🔊 **Browser / VLC 双播放后端**：OBS 网页播放适合直接混音；VLC 专属隐藏进程由插件统一调度，提供稳定本地推流声卡输出。
+- 🖥️ **独立 Fastify 播放服务**：OBS Overlay 与 WebSocket 独立监听，提供迷你（mini）、标准（standard）、侧栏（sidebar）三种精美紧凑画布。
+- 🧭 **Koishi 控制台深度集成**：包含「直播点歌」管理控制台与「弹幕状态机」可视化流转面板。
 
-`apiBaseUrl` 默认使用落月官方 API：
+---
 
-```text
-https://api.vkeys.cn
-```
+## 💬 指令区域
 
-也可在 Koishi 控制台中替换为 VincentZyu 自建 API：
+插件提供观众点歌、Bot 消息点歌以及完整的管理员控制台指令。
 
-```text
-http://xwl.vincentzyu233.cn:51217
-```
+### 1. 点歌指令
 
-| API | 网易云 | QQ 音乐 | 酷狗 |
-| --- | --- | --- | --- |
-| `https://api.vkeys.cn` | 支持 | 支持 | 当前不支持 |
-| `http://xwl.vincentzyu233.cn:51217` | 支持 | 支持 | 支持 |
+| 指令 / 触发方式 | 可用场景 | 说明与示例 |
+|---|---|---|
+| `点歌 <歌名>` | B 站直播间弹幕 | 直播间观众发送弹幕点歌，例如：`点歌 晴天`。受冷却时间与队列限制约束。 |
+| `bili-live-music.request <歌名>` | QQ / 平台消息 | 在群聊或私聊中向 Bot 发送点歌请求，例如：`bili-live-music.request 晴天`。可在配置项中指定群聊或私聊可用。 |
 
-自建 API 如果不可用，可在 QQ 群 `1085190201` 联系 `@VincentZyu`。
+### 2. 管理员指令
 
-> 自建 API 当前使用 HTTP。如果 Koishi 页面通过 HTTPS 对外提供，浏览器可能拦截 API 返回的 HTTP 音频链接，建议使用本地 HTTP OBS 浏览器源或为 API 配置 HTTPS 反向代理。
+> ⚠️ 以下控制指令默认需要 **3 级管理员权限**。
 
-## 音乐后端
+| 指令 | 权限 | 说明 |
+|---|---|---|
+| `bili-live-music.status` | 3 级 | 查看当前正在播放的歌曲信息、播放进度及等待队列中的歌曲列表。 |
+| `bili-live-music.skip` | 3 级 | 手动跳过当前正在播放的歌曲，立即推进播放队列下一首。 |
+| `bili-live-music.clear` | 3 级 | 一键清空所有等待中的点歌队列，正在播放的曲目不受影响。 |
+| `bili-live-music.overlay` | 3 级 | 获取携带访问令牌（Token）的 OBS 浏览器源地址。默认仅在 Koishi 后台控制台输出以保密 Token。 |
+| `bili-live-music.danmu.status` | 3 级 | 查询当前 B 站直播间弹幕连接状态、当前 generation 标识与网络心跳。 |
+| `bili-live-music.danmu.reconnect` | 3 级 | 主动断开当前弹幕连接并立即触发重新认证与连接，最多等待 10 秒并返回结果。 |
 
-插件在 Koishi 配置中统一选择音乐后端，B 站弹幕、Bot 指令和 WebUI 使用同一份设置。
+---
 
-- `netease`：使用网易云搜索，可选 `api.injahow.cn`、`api.qijieya.cn`、`meting.jmstrand.cn` 或 `metingapi.nanorocky.top` 生成播放直链。
-- `luoyue`：支持自定义 API URL，并可多选网易云、QQ 音乐和酷狗。WebUI 多平台搜索会并行请求并交替合并结果。
+## 🖥️ WebUI 管理区域
 
-WebUI 默认返回最多 20 条候选结果。搜索阶段只获取元数据，点击加入队列时才解析播放 URL。`webuiSearchExpireMinutes` 默认是 `30`，表示搜索结果在内存中保留 30 分钟；设置为小于或等于 `0` 时，本次插件运行期间永不过期。插件重启或 HMR 热重载始终会清空搜索结果。
+插件在 Koishi 控制台中注册了专属管理页面，并向 OBS 浏览器源提供独立 Overlay 视图：
 
-`verboseConsoleLog` 默认关闭。开启后，控制台会在普通操作摘要之外输出 WebUI 搜索标识、候选歌曲 ID、音乐源请求参数、响应摘要和耗时；带签名的完整播放直链不会写入日志。
+### 1. 点歌扩展控制台
+- **播放状态监控**：实时显示当前播放歌曲的封面、歌名、歌手、点歌人、点歌来源、实时进度条与播放状态（加载中/播放中/暂停/已结束/失败）。
+- **实时队列管理**：支持置顶、上移、下移、单曲移除或一键清空等待队列；WebUI 手动点歌会绕过用户 CD 与单人上限。
+- **多平台聚合搜索**：在控制台中直接搜索歌曲，多平台并行查询并交替合并，点击即可直接将歌曲加入播放队列。
+- **运行时音量与控制**：提供 0–100% 实时音量滑块（运行时调整不影响原配置文件）；提供上一首、播放/暂停、切歌控制按钮。
+- **后端守护与排错**：在 VLC 模式下提供「检测 VLC 路径」、「查询系统音频输出设备 ID」以及「手动重启 VLC 进程」操作。
 
-## 使用
+### 2. 状态机扩展控制台
+- **6 节点可视化状态机**：展示 `disabled`（已禁用）、`starting`（启动中）、`connected`（已连接）、`waiting`（等待重试）、`reconnecting`（重连中）、`stopped`（已停止）六种生命周期状态图。
+- **指数退避机制**：连接失败自动按 `1s -> 2s -> 4s -> 8s -> 16s -> 32s` 进行指数退避重试，达到 32 秒上限后无限持续重试。开播前先启动 Koishi 也能在开播后自动连上，无需重启插件。
+- **内存事件轨迹**：面板实时记录最近 25 条状态转移历史（包含时间戳、状态变动、触发事件与连接耗时）。
+- **Generation 隔离**：重连时自动递增 generation 标识，确保网络抖动时旧连接的迟到回调不会污染新连接状态。
 
-1. 在 Koishi 中启用 `w-node` 和本插件；队列管理 WebUI 还需要启用 `console`。
-2. 填写 `roomId`；普通公开直播间可先留空 `cookie` 和 `uid`。
-3. 按需选择 `enabledSources`；使用酷狗时需将 `apiBaseUrl` 切换到支持酷狗的 API。
-4. 在 `playbackBackend` 中选择 Browser 或 VLC；VLC 模式需要填写可用的 `vlcExecutablePath`。
-5. 保持默认 OBS 独立服务配置，或按需修改监听地址、端口、展示地址和访问令牌。
-6. 在 OBS 中添加浏览器源，地址填写插件日志或 `bili-live-music.overlay` 指令返回的地址。
-7. 默认地址为 `http://127.0.0.1:60716/bili-live-music/overlay?token=test12345&mode=player&layout=standard`。
-8. 在直播间发送 `点歌 晴天`。
+### 3. 用于 OBS 的 Layer 页面
+- **独立 Fastify 服务**：OBS 页面与 WebSocket 独立运行在专有端口（默认 `60716`），不受 Koishi 控制台重启影响，内置端口租约避免 HMR 冲突。
+- **角色分离机制**：
+  - `mode=player`（主播放器）：负责真实解码播放音频，向服务端报告播放进度、自然结束与加载失败；适合 OBS 浏览器源使用。
+  - `mode=display`（只读展示端）：只同步渲染歌曲封面、文字与队列进度，静音运行；适合第 2 个 OBS 场景或副屏监看。
+- **三种紧凑固定画布尺寸**（画布透明且自适应居中）：
+  - `mini`（`520 × 104`）：极简布局，显示封面、歌名、歌手与小进度条，适合置于直播画面角落。
+  - `standard`（`640 × 240`）：标准布局，显示当前播放详情、点歌人、大进度条与后续 2 首排队曲目。
+  - `sidebar`（`300 × 667`）：纵向侧栏布局，显示大封面、完整歌曲信息与后续 5 首排队曲目。
+- **交互控制与历史回退**：悬停时显示上一首、暂停和切歌按钮；末尾歌曲播放结束后保留封面并显示半透明遮罩（“已播放结束”/“已跳过”/“播放失败”）。
+- **开源字体服务**：前后端共享 Fastify 字体路由，自动下载并校验霞鹜文楷（`LXGWWenKaiMono-Regular.ttf`）。
 
-### 播放后端
+---
 
-`playbackBackend` 默认为 `browser`。Browser 模式由唯一的 `mode=player` 页面使用 `<audio>` 播放，适合让声音直接进入 OBS 混音器。VLC 模式在 Koishi 所在设备启动专属 VLC 进程，所有 Overlay 页面仅负责展示，但仍可通过交互按钮控制上一首、暂停和下一首。
+## 🔧 配置项
 
-| 通用播放配置项 | 默认值 | 说明 |
-| --- | --- | --- |
-| `playbackVolume` | `100` | Browser 与 VLC 共用的初始音量，可配置 0–100%。 |
-| `playbackLoadTimeout` | `25` | 单曲开始播放的等待上限，单位秒；超时后标记失败并继续下一首。 |
+### 📡 1. B 站监听配置
 
-| VLC 配置项 | 默认值 | 说明 |
-| --- | --- | --- |
-| `vlcExecutablePath` | `vlc` | VLC 可执行文件；未加入 PATH 时填写完整的 `vlc.exe` 路径。 |
-| `vlcRcPort` | `60717` | RC 控制端口，只绑定 `127.0.0.1`。 |
-| `vlcStartupTimeout` | `10000` | VLC 启动及 RC 连接超时，单位毫秒。 |
-| `vlcAudioDevice` | 空 | VLC 音频设备内部 ID；留空跟随系统默认设备。 |
-| `vlcShowWindow` | `false` | 默认隐藏插件专属 VLC 窗口，排错时可显示。 |
-| `vlcAutoRestart` | `true` | VLC 异常退出后自动重启。 |
-| `vlcRestartLimit` | `1` | 单次异常后的自动重启次数。 |
+| 配置项 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `enabled` | `boolean` | `true` | 是否启动 B 站直播间弹幕监听 |
+| `roomId` | `string` | `""` | B 站直播间号（直播间 URL 末尾的数字，如 `1854258163`） |
+| `cookie` | `string` | `""` | B 站 Cookie（普通公开直播间留空即可，会自动生成匿名标识） |
+| `uid` | `string` | `""` | B 站登录账号 UID（仅在填写 Cookie 时生效，个人主页末尾数字） |
+| `listenerVersion` | `string` | `"0.5.4"` | 通过 w-node 加载的 blive-message-listener 版本 |
 
-正式支持 Windows x64 VLC `3.0.18–3.0.23`，VLC 3 的其他版本属于尽力支持，VLC 4 nightly 属于实验支持，VLC 2.x 不支持。本机 VLC 3.0.21 已通过真实 RC 播放测试。
+> 📌 **B 站登录与 Cookie 说明**：
+> - 监听普通公开直播间**完全不需要登录**。Cookie 留空时，插件会自动初始化匿名 `buvid3` 设备标识并使用 `uid=0`。
+> - 只有在受限直播间、需要显示弹幕发送者完整用户名，或 B 站限制匿名访问时，才需填写登录 Cookie。登录 Cookie 建议包含 `SESSDATA`、`DedeUserID` 与 `buvid3`，且配置中的 `uid` 必须与 `DedeUserID` 一致。
 
-WebUI 的播放后端区域提供统一的 0–100% 实时音量滑块；调整只影响当前插件运行，不会修改 `koishi.yml`，插件重启后重新使用 `playbackVolume`。VLC 模式还提供“检测 VLC”“查询音频设备”和“重启 VLC”。查询结果会显示设备内部 ID，将目标 ID 写入 `vlcAudioDevice` 并重载插件即可固定输出设备。
+---
 
-单首歌曲地址过期或 VLC 无法解码时，插件会跳过该曲并继续下一首。VLC 进程或 RC 整体故障时会自动重启一次；重启成功后当前歌曲从头播放，重启失败则保留当前歌曲和等待队列并停止调度，等待管理员修复后从 WebUI 重启。
+### 🎵 2. 点歌入口与音乐后端
 
-### OBS 独立服务
+| 配置项 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `commandPrefix` | `string` | `"点歌"` | B 站直播间弹幕点歌的前缀关键词 |
+| `botRequestContexts` | `string[]` | `["group"]` | Bot 点歌指令 `bili-live-music.request` 的生效场景（`group` 群聊 / `private` 私聊） |
+| `musicBackend` | `"netease" \| "luoyue"` | `"netease"` | 统一音乐后端，同时作用于 B 站弹幕、Bot 指令与 WebUI |
+| `searchLimit` | `number` | `3` | 弹幕与 Bot 自动点歌时的单平台搜索候选数量 |
+| `webuiSearchLimit` | `number` | `20` | WebUI 搜索面板返回的候选歌曲目标总数 |
+| `neteaseDirectApi` | `string` | `"api.qijieya.cn"` | 网易云直链后端节点（可选 `api.injahow.cn` / `api.qijieya.cn` / `meting.jmstrand.cn` / `metingapi.nanorocky.top`） |
+| `apiBaseUrl` | `string` | `"https://api.vkeys.cn"` | 落月 API 基础 URL，支持官方或自建镜像 |
+| `enabledSources` | `string[]` | `["netease", "tencent"]` | 启用的音乐平台（`netease` 网易云 / `tencent` QQ 音乐 / `kugou` 酷狗） |
+| `neteaseQuality` | `number` | `1` | 网易云音乐最大音质参数 |
+| `tencentQuality` | `number` | `10` | QQ 音乐最大音质参数 |
+| `kugouQuality` | `string` | `"320"` | 酷狗音乐最大音质参数 |
 
-| 配置项 | 默认值 | 说明 |
-| --- | --- | --- |
-| `obsServerHost` | `0.0.0.0` | Fastify 监听地址；接受所有网卡连接，但不能直接作为网页访问地址。 |
-| `obsServerPort` | `60716` | OBS 页面与 WebSocket 的独立端口；端口被占用时插件启动失败。 |
-| `obsPublicHost` | `127.0.0.1` | 仅用于生成展示地址；跨机器连接时填写局域网 IP、公网 IP 或域名。 |
-| `obsAccessToken` | `test12345` | 页面与 WebSocket 访问令牌；默认值仅用于测试，正式使用时必须修改。 |
+> 🌙 **落月 API 支持矩阵与自建说明**：
+> 
+> `apiBaseUrl` 默认使用落月官方 API：
+> ```text
+> https://api.vkeys.cn
+> ```
+> 也可在 Koishi 控制台中替换为 VincentZyu 自建 API：
+> ```text
+> http://xwl.vincentzyu233.cn:51217
+> ```
+> 
+> | API 地址 | 网易云 | QQ 音乐 | 酷狗 |
+> |---|---|---|---|
+> | `https://api.vkeys.cn` (官方) | 支持 | 支持 | 当前不支持 |
+> | `http://xwl.vincentzyu233.cn:51217` (自建) | 支持 | 支持 | 支持 |
+> 
+> 自建 API 如果不可用，可在 QQ 群 `1085190201` 联系 `@VincentZyu`。
+> 
+> ⚠️ **混合内容警告**：自建 API 当前使用 HTTP。如果 Koishi 控制台通过 HTTPS 对外提供服务，浏览器可能会拦截 API 返回的 HTTP 音频直链。建议使用本地 HTTP OBS 浏览器源，或为 API 部署 HTTPS 反向代理。
 
-Browser 模式下，主播放器会实际播放音频，并向插件报告播放进度、结束或失败；展示端只显示当前歌曲和队列。VLC 模式下两种地址都不会在网页中播放音频，页面状态会显示“VLC 播放后端”。
+> 🌐 **音乐后端与多平台聚合机制**：
+> - `netease`：直接调用网易云直链节点生成播放 URL。
+> - `luoyue`：多选平台后，WebUI 搜索将并行请求所有已启用的平台并交替合并结果。搜索阶段只获取元数据，加入队列时才动态解析播放直链。
 
-歌曲已进入当前播放位但 Browser 或 VLC 尚未确认开始播放时，Console WebUI 与全部 Overlay 布局会在封面上显示加载动画。加载超过 `playbackLoadTimeout` 后，该歌曲会显示为“播放失败”，随后自动尝试队列中的下一首。
+---
 
-```text
-# 主播放器，适合 OBS 浏览器源
-http://127.0.0.1:60716/bili-live-music/overlay?token=test12345&mode=player&layout=standard
+### 📋 3. 队列与点歌限制
 
-# 展示端，适合第二个 OBS 场景或普通浏览器监看
-http://127.0.0.1:60716/bili-live-music/overlay?token=test12345&mode=display&layout=standard
-```
+| 配置项 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `maxQueueSize` | `number` | `30` | 播放队列的最大长度限制 |
+| `perUserLimit` | `number` | `3` | 单个用户允许同时排队的最大歌曲数 |
+| `cooldown` | `number` | `25` | 单用户点歌冷却时间，单位**秒**（设为 0 关闭 CD） |
+| `maxDuration` | `number` | `600000` (10分钟) | 允许点歌的单曲最大时长，单位毫秒 |
+| `historyLimit` | `number` | `25` | 内存中保留的最近播放历史记录数，用于“上一首”重播 |
 
-`layout` 与播放角色相互独立，支持以下三种紧凑画布布局：
+> ⏳ **冷却与限制机制说明**：
+> - `cooldown` 以秒为单位。B 站弹幕与 Bot 点歌均受此限制。
+> - 在 B 站匿名监听（`uid=0`）时，插件会自动按弹幕发送者的用户名分别计时，避免所有观众共享同一个冷却 CD。
+> - WebUI 管理员手动加歌会绕过用户 CD 与单人配额，但仍受单曲时长与队列总上限约束。
 
-| layout | OBS 推荐尺寸 | 内容 |
-| --- | --- | --- |
-| `mini` | `520 × 104` | 封面、歌名、歌手和进度，适合角落。 |
-| `standard` | `640 × 240` | 当前歌曲、点歌人、进度和后续 2 首。 |
-| `sidebar` | `300 × 666.666666` | 大封面、完整歌曲信息和后续 5 首。 |
+---
 
-页面组件使用上表的固定尺寸，即使浏览器源画布更大也不会横向拉伸，而是在透明画布中居中显示。建议 OBS 浏览器源直接使用对应推荐尺寸，位置和整体缩放在 OBS 中调整。
+### ▶️ 4. 播放后端配置
 
-页面中的设备状态组件会显示当前角色。展示端可点击“设为主播放器”接管播放，旧主播放器会停止音频并降级为展示端。没有主播放器时，新点歌曲目只进入等待队列；主播放器重连后，当前歌曲会从头播放。OBS 临时预览连接关闭时，服务端会优先把角色交还给仍在线的 `mode=player` 页面，不会让 `mode=display` 自动发声。
+| 配置项 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `playbackBackend` | `"browser" \| "vlc"` | `"browser"` | 音频播放后端：`browser` 为网页播放器，`vlc` 为插件专属 VLC 隐藏进程 |
+| `playbackVolume` | `number` | `100` | 初始播放音量（0–100%），控制台运行时调整不会写回配置文件 |
+| `playbackLoadTimeout` | `number` | `25` | 单曲加载超时阈值（秒），超时后标记为“播放失败”并自动播放下一首 |
+| `vlcExecutablePath` | `string` | `"vlc"` | VLC 可执行文件路径（系统 PATH 中已有则填 `vlc`，否则填绝对路径） |
+| `vlcRcPort` | `number` | `60717` | VLC RC 控制端口，固定监听 `127.0.0.1` |
+| `vlcStartupTimeout` | `number` | `10000` | VLC 进程启动与 RC 建立连接的超时时间（毫秒） |
+| `vlcAudioDevice` | `string` | `""` | VLC 音频设备内部 ID（留空使用系统默认设备，可在 WebUI 查询设备列表） |
+| `vlcShowWindow` | `boolean` | `false` | 是否显示 VLC 窗口（默认隐藏，排错时可开启） |
+| `vlcAutoRestart` | `boolean` | `true` | VLC 进程异常退出时是否自动拉起重启 |
+| `vlcRestartLimit` | `number` | `1` | 自动重启最大重试次数，超限后保留当前歌曲与队列并暂停调度 |
 
-主播放器悬停时会显示上一首、播放/暂停和下一首按钮。在 OBS 中可通过“与浏览器源交互”操作。最近播放历史默认保留 25 首，可通过 `historyLimit` 修改；历史只保存在内存中，插件重启后清空。
+> 🔊 **播放后端与 VLC 说明**：
+> - **Browser 模式**：通过 OBS 浏览器源的 `<audio>` 播放，声音直接进入 OBS 混音器。
+> - **VLC 模式**：适用于将音频直接由设备独立声卡播放输出。正式支持 Windows x64 VLC `3.0.18–3.0.23`。
+> - 歌曲地址失效或解码失败时会自动跳过。若 VLC 进程整体崩溃，会自动重启并重播当前歌曲；重启失败则保留队列等待管理员在 WebUI 修复并重启。
 
-最后一首歌曲结束且队列为空后，Overlay 与 Console WebUI 会继续保留该歌曲的封面、歌名、歌手和进度，并显示半透明结束遮罩。自然结束显示“已播放结束”，手动切歌显示“已跳过”，单曲加载或解码失败显示红色“播放失败”；自然结束进度固定为 100%，其余原因保留实际停止位置。最后歌曲会保留到下一首开始或插件重启，期间可以使用“上一首”从头重播。
+---
 
-插件会自动将 `LXGWWenKaiMono-Regular.ttf` 下载到 `ctx.baseDir/data/assets/bili-live-music/fonts`，依次尝试 Gitee 和 GitHub，并校验文件大小与 SHA-256。Overlay 与 Console WebUI 共用 Fastify 字体路由；下载失败、HTTPS 页面阻止 HTTP 字体或字体服务不可达时会回退到系统字体。
+### 🖥️ 5. OBS 独立播放服务
 
-在 OBS 的“来源”面板点击 `+`，选择“浏览器”，并按以下方式设置：
+| 配置项 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `obsServerHost` | `string` | `"0.0.0.0"` | Fastify 独立 HTTP 服务监听地址（`0.0.0.0` 监听所有网卡） |
+| `obsServerPort` | `number` | `60716` | Fastify 独立端口（被占用时启动失败并提示） |
+| `obsPublicHost` | `string` | `"127.0.0.1"` | 生成并展示给 OBS 使用的访问地址或域名 |
+| `obsAccessToken` | `string` | `"test12345"` | Overlay 页面与 WebSocket 访问密钥，**正式使用务必修改** |
+| `overlayPath` | `string` | `"/bili-live-music/overlay"` | OBS 浏览器源页面访问路径 |
+| `wsPath` | `string` | `"/bili-live-music/ws"` | OBS 浏览器源 WebSocket 路径 |
+| `overlayTemplatePath`| `string` | 默认模板路径 | OBS 页面模板路径，运行时保存在 `ctx.baseDir/data/assets` |
+| `fontPath` | `string` | 默认字体路径 | 霞鹜文楷字体文件路径 |
+| `overlayCommandConsoleOnly` | `boolean` | `true` | 指令查询 OBS 地址时是否仅向控制台输出完整令牌地址 |
 
-- Browser 模式的 URL 填写 `mode=player` 主播放器地址；VLC 模式可使用任意展示地址。
-- 宽度和高度直接使用布局表中的推荐尺寸，页面组件不会随浏览器源画布拉伸。
-- Browser 模式建议启用“通过 OBS 控制音频”，让网页音乐进入 OBS 混音器；需要本机也听见时，在“高级音频属性”中将监听设为“监听并输出”。
-- VLC 模式的声音从 Koishi 所在设备输出，OBS 中需要启用“桌面音频”或添加“应用程序音频采集”并选择插件启动的 VLC。
-- 建议关闭“场景变为活动状态时刷新浏览器”和“场景不可见时关闭源”，否则切换场景会断开播放器并让当前歌曲从头播放。
-- Browser 模式同一时间只保留一个 `mode=player` 页面。其他场景或浏览器监看请使用 `mode=display`，避免主播放器被后打开的页面接管。
+> 🔤 **霞鹜文楷字体获取机制**：
+> - 插件启动时会自动将 `LXGWWenKaiMono-Regular.ttf` 下载到 `data/assets/bili-live-music/fonts`。
+> - 优先从 Gitee release 下载，失败后自动 fallback 至 GitHub release，并严格校验 SHA-256。
+> - Fastify 服务内置字体路由，页面断网或在 HTTPS 下被阻断时会自动降级为系统字体。
 
-Fastify 仅提供 HTTP。需要公网 HTTPS 时，请使用 Nginx、Caddy 等反向代理管理 TLS。
+---
 
-### B 站登录说明
+### 🧭 6. 控制台与 WebUI 设置
 
-监听普通公开直播间不需要登录 B 站。Cookie 留空时，插件会自动初始化匿名 `buvid3` 设备标识并使用 `uid=0`；`buvid3` 不是账号登录凭证。
+| 配置项 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `enableMusicManagementPage` | `boolean` | `true` | 是否启用「直播点歌」管理控制台页面正文 |
+| `enableDanmuStateMachinePage` | `boolean` | `false` | 是否启用「弹幕状态机」可视化页面正文 |
+| `webuiSearchExpireMinutes` | `number` | `30` | WebUI 搜索缓存有效期（分钟，小于等于 0 永不过期） |
 
-只有受限直播间、需要完整弹幕用户名，或 B 站限制匿名访问时，才需要填写登录 Cookie。登录 Cookie 建议包含 `SESSDATA`、`DedeUserID` 和 `buvid3`，配置的 `uid` 必须与 `DedeUserID` 一致。
+> 💡 **页面路由与搜索缓存说明**：
+> - 关闭页面内容开关后，Console 路由仍会保留，方便随时开启而无需重启 Koishi。
+> - `webuiSearchExpireMinutes`：搜索候选结果在内存中保留的分钟数，过期后点击加歌会提示重新搜索；插件重启或 HMR 热重载会清空搜索缓存。
 
-### 弹幕连接与自动重连
+---
 
-弹幕监听使用 `disabled`、`starting`、`connected`、`waiting`、`reconnecting` 和 `stopped` 六个状态。每次连接最多等待 10 秒完成认证；失败后按照 `1、2、4、8、16、32` 秒指数退避，达到 32 秒后继续每 32 秒无限重试。因此先启动 Koishi、稍后再开启直播时，不需要重载插件。
+### 🐛 7. 调试设置
 
-连接成功后失败次数归零，下一次断线重新从 1 秒开始。插件卸载或 HMR 时会关闭监听器并清理连接超时与重试计时器，旧连接的迟到回调不会影响新实例。
+| 配置项 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `verboseConsoleLog` | `boolean` | `false` | 是否在控制台打印详细调试日志 |
 
-## Bot 点歌
-
-在 `botRequestContexts` 中勾选群聊或私聊后，可使用：
-
-```text
-bili-live-music.request 晴天
-```
-
-该指令与 B 站弹幕点歌共用搜索、用户冷却、单用户上限和播放队列。全部取消勾选时不会注册该指令。
-
-## WebUI 队列管理
-
-Koishi 控制台会新增「直播点歌」页面，支持：
-
-- 查看当前播放、点歌人和点歌入口。
-- 搜索候选歌曲并以 `WebUI 管理员` 身份加入队列。
-- 置顶、上移、下移或删除等待歌曲。
-- 跳过当前歌曲或清空等待队列。
-- 查看 Browser/VLC 运行状态，并检测 VLC、查询音频设备或重启专属 VLC 进程。
-- 查看 B 站弹幕连接状态、失败次数、重试倒计时并手动重连。
-
-Console 始终注册「直播点歌」与「弹幕状态机」两个页面，页面可以相互跳转。`enableMusicManagementPage` 默认开启，控制直播点歌管理内容；`enableDanmuStateMachinePage` 默认关闭，控制六节点状态图和最近 25 条内存转换记录。关闭页面内容后路由仍然保留，并显示需要开启的配置项。
-
-WebUI 手动加歌会绕过用户冷却和单用户上限，但仍遵守单曲时长和总队列上限。队列仅保存在内存中，重启插件后会清空。
-
-`cooldown` 的单位是秒，默认值为 `25`，设置为 `0` 可关闭 CD。B 站弹幕和 Bot 点歌会受到限制，WebUI 管理员手动加歌会绕过限制。B 站匿名监听返回 `uid=0` 时，插件改用弹幕用户名区分观众，避免所有匿名观众共享同一个冷却计时器。
-
-## 命令
-
-```text
-bili-live-music.status   # 查看当前歌曲和队列
-bili-live-music.skip     # 跳过当前歌曲，需要 3 级权限
-bili-live-music.clear    # 清空等待队列，需要 3 级权限
-bili-live-music.overlay  # 查看含访问令牌的 OBS 地址，需要 3 级权限
-bili-live-music.danmu.status     # 查看弹幕监听状态，需要 3 级权限
-bili-live-music.danmu.reconnect  # 断开并重新连接弹幕监听，需要 3 级权限
-```
-
-手动重连最多等待 10 秒。认证成功时返回 `connected` 和实际耗时；明确失败或超时时返回 `waiting`、连续失败次数和下一次自动重试时间。
+> 🔍 **关于 verboseConsoleLog**：
+> - 开启后，控制台会详细输出 WebUI 搜索标识、候选歌曲 ID、API 请求参数、响应状态与各阶段耗时。
+> - 为保护接口安全，带有时效签名的完整音频播放直链**绝对不会**输出到日志中。
