@@ -24,7 +24,8 @@
     "plugin"
   ],
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "prepack": "node -e \"const fs = require('node:fs'); if (!fs.existsSync('lib/index.js')) { console.error('Missing lib/index.js. Run yarn build bili-live-music before packing or publishing.'); process.exit(1) }\""
   },
   "koishi": {
     "browser": true,
