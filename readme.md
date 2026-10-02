@@ -13,6 +13,14 @@
 
 B站直播间点歌，支持弹幕、Bot 与 WebUI 队列管理，可通过 OBS 浏览器源或插件专属 VLC 进程播放音频。
 
+## 📸 效果预览
+
+### OBS / B 站直播姬播放器与弹幕点歌效果
+![B站直播姬演示obs播放器网页以及弹幕点歌效果](./docs/images/preview/B站直播姬演示obs播放器网页以及弹幕点歌效果.png)
+
+### Koishi 控制台 WebUI 点歌台管理面板
+![koishi的扩展webui.管理员点歌台控制面板](./docs/images/preview/koishi的扩展webui.管理员点歌台控制面板.png)
+
 ## 功能
 
 - 监听指定 B 站直播间的弹幕，识别 `点歌 歌名`。
