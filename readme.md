@@ -1,6 +1,15 @@
-# koishi-plugin-bili-live-music
+> 💡 推荐前往 [GitHub](https://github.com/VincentZyuApps/koishi-plugin-bili-live-music) 阅读 README，体验更好。
 
-[![npm](https://img.shields.io/npm/v/koishi-plugin-bili-live-music?style=flat-square)](https://www.npmjs.com/package/koishi-plugin-bili-live-music)
+# 🎵 koishi-plugin-bili-live-music
+
+[![npm](https://img.shields.io/npm/v/koishi-plugin-bili-live-music?style=flat-square&logo=npm)](https://www.npmjs.com/package/koishi-plugin-bili-live-music)
+[![npm-download](https://img.shields.io/npm/dm/koishi-plugin-bili-live-music?style=flat-square&logo=npm)](https://npm-stat.com/charts.html?package=koishi-plugin-bili-live-music)
+[![GitHub](https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/VincentZyuApps/koishi-plugin-bili-live-music)
+[![QQ群](https://img.shields.io/badge/QQ群-1085190201-12B7F5?style=flat-square&logo=qq&logoColor=white)](https://qm.qq.com/q/ZHj33L5cuC)
+
+<h2>💬 交流反馈</h2>
+<p>🐛 Bug 反馈 / 💡 建议 / 👨‍💻 插件交流，欢迎加群：<b>1085190201</b> 🎉</p>
+<p>💡 在群里直接艾特 @VincentZyu，回复更及时~ ✨</p>
 
 B站直播间点歌，支持弹幕、Bot 与 WebUI 队列管理，可通过 OBS 浏览器源或插件专属 VLC 进程播放音频。
 
